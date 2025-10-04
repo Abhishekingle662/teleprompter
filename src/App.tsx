@@ -192,19 +192,21 @@ function App() {
   // Register global shortcuts
   useEffect(() => {
     let registered = false;
-    let isRegistering = false;
     
     const registerShortcuts = async () => {
-      if (isRegistering || shortcutsRegisteredRef.current) return; // Prevent concurrent/duplicate registration
-      isRegistering = true;
+      // In production, only register once. In dev, allow re-registration after cleanup
+      if (shortcutsRegisteredRef.current) {
+        console.log("Shortcuts already registered, skipping");
+        return;
+      }
+      
       shortcutsRegisteredRef.current = true;
       
       // Wait longer for Tauri to be ready and avoid race conditions
-      await new Promise(resolve => setTimeout(resolve, 200));
+      await new Promise(resolve => setTimeout(resolve, 300));
       
       if (!isTauri()) {
         console.warn("Not in Tauri, skipping shortcut registration");
-        isRegistering = false;
         return;
       }
       
@@ -215,7 +217,8 @@ function App() {
           "CommandOrControl+Up",
           "CommandOrControl+Down",
           "CommandOrControl+BracketLeft",
-          "CommandOrControl+BracketRight"
+          "CommandOrControl+BracketRight",
+          "CommandOrControl+I"
         ];
         
         for (const shortcut of shortcuts) {
@@ -225,7 +228,9 @@ function App() {
         }
         
         // Small delay after unregistering
-        await new Promise(resolve => setTimeout(resolve, 50));
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+        console.log("Registering global shortcuts...");
         
         await register("CommandOrControl+Space", () => {
           // Debounce to prevent key auto-repeat (500ms)
@@ -290,17 +295,25 @@ function App() {
         });
         
         registered = true;
+        console.log("Global shortcuts registered successfully");
       } catch (error) {
         console.error("Failed to register shortcuts:", error);
+        shortcutsRegisteredRef.current = false; // Allow retry on error
       }
     };
 
     registerShortcuts();
 
+    // Cleanup only in development mode (React Strict Mode causes double mounting)
     return () => {
-      if (!isTauri() || !registered) {
+      // Only unregister if we're in development and doing hot reload
+      // In production, keep shortcuts registered for the app lifetime
+      const isDev = import.meta.env.DEV;
+      if (!isTauri() || !registered || !isDev) {
         return;
       }
+      
+      console.log("Cleaning up shortcuts (dev mode)");
       unregister("CommandOrControl+Space").catch(console.error);
       unregister("CommandOrControl+Up").catch(console.error);
       unregister("CommandOrControl+Down").catch(console.error);
