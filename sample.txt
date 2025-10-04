@@ -1,0 +1,22 @@
+Welcome to the Teleprompter Application
+
+This is a sample teleprompter script that you can use to test the application.
+
+The teleprompter supports various features:
+- Adjustable scrolling speed based on Words Per Minute (WPM)
+- Customizable font size and family
+- Text mirroring for use with teleprompter glass
+- Transparent overlay that stays on top of other windows
+- Click-through mode for non-intrusive operation
+- Focus band to highlight the current reading area
+- Global keyboard shortcuts for hands-free control
+
+You can import text files in .txt or .md format, or simply paste your script directly into the application.
+
+The countdown timer helps you prepare before the text starts scrolling, giving you time to get into position.
+
+Save different profiles for various use cases - perhaps one for casual reading, another for formal presentations, and a third for video recording.
+
+Your session is automatically saved, so you can pick up right where you left off the next time you open the application.
+
+Happy prompting!

@@ -53,6 +53,7 @@ function App() {
   const [scrollMode, setScrollMode] = useState<"continuous" | "karaoke">("continuous");
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [currentProfile, setCurrentProfile] = useState<string>("");
+  const [scrollProgress, setScrollProgress] = useState<number>(0);
   
   const textContainerRef = useRef<HTMLDivElement>(null);
   const scrollIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -135,6 +136,13 @@ function App() {
   useEffect(() => {
     if (textContainerRef.current) {
       textContainerRef.current.scrollTop = scrollPosition;
+      
+      // Calculate scroll progress
+      const element = textContainerRef.current;
+      const maxScroll = element.scrollHeight - element.clientHeight;
+      if (maxScroll > 0) {
+        setScrollProgress((scrollPosition / maxScroll) * 100);
+      }
     }
   }, [scrollPosition]);
 
@@ -171,14 +179,27 @@ function App() {
       }
     };
 
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        if (isPlaying || isCountingDown) {
+          setIsPlaying(false);
+          setIsCountingDown(false);
+        } else {
+          setShowControls(!showControls);
+        }
+      }
+    };
+
     window.addEventListener("mousedown", handleMouseDown);
     window.addEventListener("mouseup", handleMouseUp);
+    window.addEventListener("keydown", handleKeyDown);
 
     return () => {
       window.removeEventListener("mousedown", handleMouseDown);
       window.removeEventListener("mouseup", handleMouseUp);
+      window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [clickThrough]);
+  }, [clickThrough, isPlaying, isCountingDown, showControls]);
 
   const loadSettings = async () => {
     try {
@@ -329,6 +350,14 @@ function App() {
 
   return (
     <div className="app">
+      {/* Playback status indicator */}
+      {!showControls && (isPlaying || isCountingDown) && (
+        <div className="status-indicator">
+          {isCountingDown ? `Starting in ${countdown}...` : "● Playing"}
+          {isPlaying && ` - ${Math.round(scrollProgress)}%`}
+        </div>
+      )}
+
       {isCountingDown && (
         <div className="countdown-overlay">
           <div className="countdown-number">{countdown}</div>
@@ -358,8 +387,9 @@ function App() {
               Countdown (s):
               <input
                 type="number"
-                value={countdown}
-                onChange={(e) => setCountdown(parseInt(e.target.value) || 0)}
+                value={countdown === 0 ? "" : countdown}
+                onChange={(e) => setCountdown(Math.max(0, Math.min(10, parseInt(e.target.value) || 0)))}
+                placeholder="0"
                 min={0}
                 max={10}
               />

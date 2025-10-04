@@ -200,3 +200,18 @@ body {
 .controls-panel::-webkit-scrollbar-thumb:hover {
   background: rgba(97, 218, 251, 0.7);
 }
+
+.status-indicator {
+  position: fixed;
+  top: 10px;
+  left: 10px;
+  padding: 8px 16px;
+  background: rgba(0, 0, 0, 0.7);
+  color: #61dafb;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 500;
+  z-index: 998;
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(97, 218, 251, 0.3);
+}

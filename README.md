@@ -101,6 +101,7 @@ Enable the focus band to highlight a specific area of the screen where you want 
 | `Ctrl/Cmd+Down` | Decrease speed (-10 WPM) |
 | `Ctrl/Cmd+Shift+O` | Decrease opacity |
 | `Ctrl/Cmd+Shift+P` | Increase opacity |
+| `Escape` | Stop playback or toggle controls |
 
 ## Platform-Specific Notes
 
