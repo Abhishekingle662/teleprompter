@@ -1,4 +1,4 @@
-use tauri::{Manager, AppHandle, State, Window};
+use tauri::{State, Window};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 
@@ -17,6 +17,7 @@ struct TeleprompterSettings {
     focus_band_enabled: bool,
     focus_band_position: u32,
     focus_band_height: u32,
+    text_color: String,
 }
 
 impl Default for TeleprompterSettings {
@@ -35,6 +36,7 @@ impl Default for TeleprompterSettings {
             focus_band_enabled: false,
             focus_band_position: 50,
             focus_band_height: 20,
+            text_color: "#ffffff".to_string(),
         }
     }
 }
@@ -91,12 +93,6 @@ fn set_window_size(window: Window, width: u32, height: u32) -> Result<(), String
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-fn set_opacity(window: Window, opacity: f64) -> Result<(), String> {
-    window.set_opacity(opacity)
-        .map_err(|e| e.to_string())
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -116,7 +112,6 @@ pub fn run() {
             update_settings,
             set_window_position,
             set_window_size,
-            set_opacity,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

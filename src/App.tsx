@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { readTextFile } from "@tauri-apps/plugin-fs";
 import { Store } from "@tauri-apps/plugin-store";
@@ -20,6 +21,7 @@ interface Settings {
   focus_band_enabled: boolean;
   focus_band_position: number;
   focus_band_height: number;
+  text_color: string;
 }
 
 interface Profile {
@@ -45,6 +47,7 @@ function App() {
     focus_band_enabled: false,
     focus_band_position: 50,
     focus_band_height: 20,
+    text_color: "#ffffff",
   });
   const [showControls, setShowControls] = useState(true);
   const [clickThrough, setClickThrough] = useState(false);
@@ -58,11 +61,123 @@ function App() {
   const textContainerRef = useRef<HTMLDivElement>(null);
   const scrollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const store = useRef<Store | null>(null);
-  const holdInteractRef = useRef<boolean>(false);
+  const settingsRef = useRef<Settings>(settings);
+  const isPlayingRef = useRef<boolean>(isPlaying);
+  const isCountingDownRef = useRef<boolean>(isCountingDown);
+  const countdownRef = useRef<number>(countdown);
+  const lastShortcutTime = useRef<number>(0); // For debouncing
+  const clickThroughRef = useRef<boolean>(clickThrough);
+
+  // Keep refs in sync
+  useEffect(() => {
+    settingsRef.current = settings;
+  }, [settings]);
+
+  useEffect(() => {
+    isPlayingRef.current = isPlaying;
+  }, [isPlaying]);
+
+  useEffect(() => {
+    isCountingDownRef.current = isCountingDown;
+  }, [isCountingDown]);
+
+  useEffect(() => {
+    countdownRef.current = countdown;
+  }, [countdown]);
+
+  useEffect(() => {
+    clickThroughRef.current = clickThrough;
+  }, [clickThrough]);
+
+  // Helper function to adjust color brightness
+  const adjustColorBrightness = (hexColor: string, amount: number): string => {
+    // Remove # if present
+    const hex = hexColor.replace('#', '');
+    
+    // Convert to RGB
+    const r = Math.max(0, Math.min(255, parseInt(hex.substring(0, 2), 16) + amount));
+    const g = Math.max(0, Math.min(255, parseInt(hex.substring(2, 4), 16) + amount));
+    const b = Math.max(0, Math.min(255, parseInt(hex.substring(4, 6), 16) + amount));
+    
+    // Convert back to hex
+    const newHex = '#' + 
+      r.toString(16).padStart(2, '0') +
+      g.toString(16).padStart(2, '0') +
+      b.toString(16).padStart(2, '0');
+    
+    return newHex;
+  };
+
+  // Check if running in Tauri - use a more reliable method
+  const isTauri = () => {
+    // Check if we're in a browser or Tauri
+    // In Tauri, window.__TAURI_INTERNALS__ exists or we can check if getCurrentWindow works
+    try {
+      // Try to get window instance - this will work in Tauri
+      getCurrentWindow();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  // Handle window dragging
+  const handleDragStart = async (e: React.MouseEvent) => {
+    if (!isTauri()) return;
+    e.preventDefault();
+    try {
+      const appWindow = getCurrentWindow();
+      await appWindow.startDragging();
+    } catch (error) {
+      console.error("Failed to start dragging:", error);
+    }
+  };
+
+  // Window control handlers
+  const handleMinimize = async (e: React.MouseEvent) => {
+    if (!isTauri()) return;
+    e.stopPropagation(); // Prevent drag from triggering
+    try {
+      const appWindow = getCurrentWindow();
+      await appWindow.minimize();
+    } catch (error) {
+      console.error("Failed to minimize:", error);
+    }
+  };
+
+  const handleMaximize = async (e: React.MouseEvent) => {
+    if (!isTauri()) return;
+    e.stopPropagation(); // Prevent drag from triggering
+    try {
+      const appWindow = getCurrentWindow();
+      await appWindow.toggleMaximize();
+    } catch (error) {
+      console.error("Failed to maximize:", error);
+    }
+  };
+
+  const handleClose = async (e: React.MouseEvent) => {
+    if (!isTauri()) return;
+    e.stopPropagation(); // Prevent drag from triggering
+    try {
+      const appWindow = getCurrentWindow();
+      await appWindow.close();
+    } catch (error) {
+      console.error("Failed to close:", error);
+    }
+  };
 
   // Initialize store and load settings
   useEffect(() => {
     const initStore = async () => {
+      // Wait a bit for Tauri to be ready
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      if (!isTauri()) {
+        console.warn("Not running in Tauri environment. Run with 'npm run tauri dev'");
+        return;
+      }
+      
       store.current = await Store.load("settings.json");
       await loadSettings();
       await loadProfiles();
@@ -71,25 +186,110 @@ function App() {
     initStore();
   }, []);
 
+  // Track shortcut registration across hot reloads
+  const shortcutsRegisteredRef = useRef(false);
+
   // Register global shortcuts
   useEffect(() => {
+    let registered = false;
+    let isRegistering = false;
+    
     const registerShortcuts = async () => {
+      if (isRegistering || shortcutsRegisteredRef.current) return; // Prevent concurrent/duplicate registration
+      isRegistering = true;
+      shortcutsRegisteredRef.current = true;
+      
+      // Wait longer for Tauri to be ready and avoid race conditions
+      await new Promise(resolve => setTimeout(resolve, 200));
+      
+      if (!isTauri()) {
+        console.warn("Not in Tauri, skipping shortcut registration");
+        isRegistering = false;
+        return;
+      }
+      
       try {
+        // Unregister all shortcuts first to avoid conflicts
+        const shortcuts = [
+          "CommandOrControl+Space",
+          "CommandOrControl+Up",
+          "CommandOrControl+Down",
+          "CommandOrControl+BracketLeft",
+          "CommandOrControl+BracketRight"
+        ];
+        
+        for (const shortcut of shortcuts) {
+          await unregister(shortcut).catch(() => {
+            // Silently ignore if not registered
+          });
+        }
+        
+        // Small delay after unregistering
+        await new Promise(resolve => setTimeout(resolve, 50));
+        
         await register("CommandOrControl+Space", () => {
-          togglePlayPause();
+          // Debounce to prevent key auto-repeat (500ms)
+          const now = Date.now();
+          if (now - lastShortcutTime.current < 500) {
+            return;
+          }
+          lastShortcutTime.current = now;
+          
+          const currentIsPlaying = isPlayingRef.current;
+          const currentIsCountingDown = isCountingDownRef.current;
+          const currentCountdown = countdownRef.current;
+          
+          if (!currentIsPlaying && !currentIsCountingDown) {
+            // Start countdown if configured, otherwise play
+            if (currentCountdown > 0) {
+              setIsCountingDown(true);
+            } else {
+              setIsPlaying(true);
+            }
+          } else {
+            // Stop both playing and countdown
+            setIsPlaying(false);
+            setIsCountingDown(false);
+          }
         });
         await register("CommandOrControl+Up", () => {
-          updateSettings({ ...settings, wpm: Math.min(settings.wpm + 10, 500) });
+          const current = settingsRef.current;
+          updateSettings({ ...current, wpm: Math.min(current.wpm + 10, 500) });
         });
         await register("CommandOrControl+Down", () => {
-          updateSettings({ ...settings, wpm: Math.max(settings.wpm - 10, 10) });
+          const current = settingsRef.current;
+          updateSettings({ ...current, wpm: Math.max(current.wpm - 10, 10) });
         });
-        await register("CommandOrControl+Shift+O", () => {
-          updateSettings({ ...settings, opacity: Math.max(settings.opacity - 0.1, 0.1) });
+        await register("CommandOrControl+BracketLeft", () => {
+          // Darken text color
+          const current = settingsRef.current;
+          const color = current.text_color;
+          const darkerColor = adjustColorBrightness(color, -20);
+          updateSettings({ ...current, text_color: darkerColor });
         });
-        await register("CommandOrControl+Shift+P", () => {
-          updateSettings({ ...settings, opacity: Math.min(settings.opacity + 0.1, 1.0) });
+        await register("CommandOrControl+BracketRight", () => {
+          // Lighten text color
+          const current = settingsRef.current;
+          const color = current.text_color;
+          const lighterColor = adjustColorBrightness(color, 20);
+          updateSettings({ ...current, text_color: lighterColor });
         });
+        
+        // Toggle click-through temporarily for interaction
+        await register("CommandOrControl+I", () => {
+          const currentClickThrough = clickThroughRef.current;
+          if (currentClickThrough && isTauri()) {
+            console.log("Toggling click-through with Ctrl+I");
+            // Toggle the actual click-through state
+            invoke("toggle_click_through", {}).then((newState) => {
+              setClickThrough(newState as boolean);
+            }).catch(err => {
+              console.error("Failed to toggle click-through:", err);
+            });
+          }
+        });
+        
+        registered = true;
       } catch (error) {
         console.error("Failed to register shortcuts:", error);
       }
@@ -98,13 +298,18 @@ function App() {
     registerShortcuts();
 
     return () => {
+      if (!isTauri() || !registered) {
+        return;
+      }
       unregister("CommandOrControl+Space").catch(console.error);
       unregister("CommandOrControl+Up").catch(console.error);
       unregister("CommandOrControl+Down").catch(console.error);
-      unregister("CommandOrControl+Shift+O").catch(console.error);
-      unregister("CommandOrControl+Shift+P").catch(console.error);
+      unregister("CommandOrControl+BracketLeft").catch(console.error);
+      unregister("CommandOrControl+BracketRight").catch(console.error);
+      unregister("CommandOrControl+I").catch(console.error);
+      shortcutsRegisteredRef.current = false;
     };
-  }, [settings]);
+  }, []); // Remove settings dependency
 
   // Scroll animation
   useEffect(() => {
@@ -159,54 +364,45 @@ function App() {
     }
   }, [countdown, isCountingDown]);
 
-  // Handle mouse events for hold-to-interact
+  // Handle keyboard events for Escape
   useEffect(() => {
-    const handleMouseDown = (e: MouseEvent) => {
-      if (e.ctrlKey || e.metaKey) {
-        holdInteractRef.current = true;
-        if (clickThrough) {
-          invoke("set_click_through", { enabled: false });
-        }
-      }
-    };
-
-    const handleMouseUp = () => {
-      if (holdInteractRef.current) {
-        holdInteractRef.current = false;
-        if (clickThrough) {
-          invoke("set_click_through", { enabled: true });
-        }
-      }
-    };
-
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Escape key toggles controls or stops playback
       if (e.key === "Escape") {
-        if (isPlaying || isCountingDown) {
+        const currentIsPlaying = isPlayingRef.current;
+        const currentIsCountingDown = isCountingDownRef.current;
+        
+        if (currentIsPlaying || currentIsCountingDown) {
           setIsPlaying(false);
           setIsCountingDown(false);
         } else {
-          setShowControls(!showControls);
+          setShowControls(prev => !prev);
         }
       }
     };
 
-    window.addEventListener("mousedown", handleMouseDown);
-    window.addEventListener("mouseup", handleMouseUp);
     window.addEventListener("keydown", handleKeyDown);
 
     return () => {
-      window.removeEventListener("mousedown", handleMouseDown);
-      window.removeEventListener("mouseup", handleMouseUp);
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [clickThrough, isPlaying, isCountingDown, showControls]);
+  }, []); // No dependencies needed since we use refs
 
   const loadSettings = async () => {
     try {
       const savedSettings = await store.current?.get<Settings>("settings");
       if (savedSettings) {
-        setSettings(savedSettings);
-        updateSettings(savedSettings);
+        // Ensure text_color field exists for old saved settings
+        const migratedSettings = {
+          ...savedSettings,
+          text_color: savedSettings.text_color || "#ffffff"
+        };
+        setSettings(migratedSettings);
+        // Save settings without calling updateSettings to avoid recursion
+        await saveSettings(migratedSettings);
+        if (isTauri()) {
+          await invoke("update_settings", { settings: migratedSettings });
+        }
       }
     } catch (error) {
       console.error("Failed to load settings:", error);
@@ -266,8 +462,9 @@ function App() {
   const updateSettings = async (newSettings: Settings) => {
     setSettings(newSettings);
     await saveSettings(newSettings);
-    await invoke("update_settings", { settings: newSettings });
-    await invoke("set_opacity", { opacity: newSettings.opacity });
+    if (isTauri()) {
+      await invoke("update_settings", { settings: newSettings });
+    }
   };
 
   const togglePlayPause = () => {
@@ -285,6 +482,10 @@ function App() {
   };
 
   const handleImportFile = async () => {
+    if (!isTauri()) {
+      alert("File import is only available in the Tauri app. Run with 'npm run tauri dev'");
+      return;
+    }
     try {
       const selected = await open({
         multiple: false,
@@ -307,6 +508,10 @@ function App() {
   };
 
   const toggleClickThrough = async () => {
+    if (!isTauri()) {
+      alert("Click-through is only available in the Tauri app. Run with 'npm run tauri dev'");
+      return;
+    }
     try {
       const newState = await invoke<boolean>("toggle_click_through");
       setClickThrough(newState);
@@ -345,11 +550,18 @@ function App() {
     paddingRight: `${settings.margin_right}px`,
     lineHeight: 1.5,
     whiteSpace: "pre-wrap",
-    color: "white",
+    color: settings.text_color,
   };
 
   return (
     <div className="app">
+      {/* Drag region when controls are hidden */}
+      {!showControls && (
+        <div className="drag-handle" data-tauri-drag-region onMouseDown={handleDragStart}>
+          Teleprompter - Press Esc to toggle controls
+        </div>
+      )}
+
       {/* Playback status indicator */}
       {!showControls && (isPlaying || isCountingDown) && (
         <div className="status-indicator">
@@ -366,6 +578,35 @@ function App() {
 
       {showControls && (
         <div className="controls-panel">
+          <div className="drag-header" data-tauri-drag-region onMouseDown={handleDragStart}>
+            <h2>Teleprompter Controls</h2>
+            <div className="window-controls">
+              <button 
+                className="window-button minimize" 
+                onClick={handleMinimize}
+                onMouseDown={(e) => e.stopPropagation()}
+                title="Minimize"
+              >
+                ─
+              </button>
+              <button 
+                className="window-button maximize" 
+                onClick={handleMaximize}
+                onMouseDown={(e) => e.stopPropagation()}
+                title="Maximize"
+              >
+                ☐
+              </button>
+              <button 
+                className="window-button close" 
+                onClick={handleClose}
+                onMouseDown={(e) => e.stopPropagation()}
+                title="Close"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
           <div className="control-section">
             <h3>Text</h3>
             <button onClick={handleImportFile}>Import File</button>
@@ -446,6 +687,15 @@ function App() {
 
           <div className="control-section">
             <h3>Appearance</h3>
+            <label>
+              Text Color:
+              <input
+                type="color"
+                value={settings.text_color}
+                onChange={(e) => updateSettings({ ...settings, text_color: e.target.value })}
+                style={{ width: '100%', height: '40px', cursor: 'pointer' }}
+              />
+            </label>
             <label>
               Opacity: {settings.opacity.toFixed(2)}
               <input

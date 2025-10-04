@@ -32,6 +32,29 @@ body {
   overflow: hidden;
 }
 
+.drag-handle {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: 8px 16px;
+  background: rgba(97, 218, 251, 0.15);
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 12px;
+  text-align: center;
+  cursor: move;
+  user-select: none;
+  -webkit-user-select: none;
+  z-index: 999;
+  backdrop-filter: blur(5px);
+  border-bottom: 1px solid rgba(97, 218, 251, 0.3);
+}
+
+.drag-handle:hover {
+  background: rgba(97, 218, 251, 0.25);
+  color: rgba(255, 255, 255, 0.9);
+}
+
 .controls-panel {
   position: fixed;
   top: 0;
@@ -40,13 +63,80 @@ body {
   height: 100vh;
   background: rgba(0, 0, 0, 0.9);
   color: white;
-  padding: 20px;
+  padding: 0;
   overflow-y: auto;
   z-index: 1000;
   backdrop-filter: blur(10px);
 }
 
+.drag-header {
+  padding: 15px 20px;
+  background: rgba(97, 218, 251, 0.1);
+  border-bottom: 1px solid rgba(97, 218, 251, 0.3);
+  cursor: move;
+  user-select: none;
+  -webkit-user-select: none;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.drag-header h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #61dafb;
+}
+
+.window-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.window-button {
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: rgba(255, 255, 255, 0.1);
+  color: white;
+  font-size: 16px;
+  cursor: pointer;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  padding: 0;
+  line-height: 1;
+}
+
+.window-button:hover {
+  background: rgba(255, 255, 255, 0.2);
+  transform: scale(1.05);
+}
+
+.window-button.minimize:hover {
+  background: rgba(97, 218, 251, 0.3);
+  color: #61dafb;
+}
+
+.window-button.maximize:hover {
+  background: rgba(97, 218, 251, 0.3);
+  color: #61dafb;
+}
+
+.window-button.close:hover {
+  background: rgba(255, 69, 58, 0.8);
+  color: white;
+}
+
+.window-button:active {
+  transform: scale(0.95);
+}
+
 .control-section {
+  margin: 20px;
   margin-bottom: 20px;
   padding-bottom: 15px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.2);
@@ -81,6 +171,13 @@ body {
   color: white;
   border-radius: 4px;
   font-family: inherit;
+}
+
+/* Style dropdown options for better visibility */
+.control-section select option {
+  background: #2a2a2a;
+  color: white;
+  padding: 8px;
 }
 
 .control-section textarea {
