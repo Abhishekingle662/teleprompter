@@ -1,0 +1,202 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 400;
+  color: #f6f6f6;
+  background-color: transparent;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: transparent;
+  overflow: hidden;
+}
+
+.app {
+  width: 100vw;
+  height: 100vh;
+  background: transparent;
+  position: relative;
+  overflow: hidden;
+}
+
+.controls-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 350px;
+  height: 100vh;
+  background: rgba(0, 0, 0, 0.9);
+  color: white;
+  padding: 20px;
+  overflow-y: auto;
+  z-index: 1000;
+  backdrop-filter: blur(10px);
+}
+
+.control-section {
+  margin-bottom: 20px;
+  padding-bottom: 15px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.control-section h3 {
+  margin-bottom: 10px;
+  color: #61dafb;
+  font-size: 14px;
+  text-transform: uppercase;
+}
+
+.control-section label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+
+.control-section input[type="range"] {
+  width: 100%;
+  margin-top: 5px;
+}
+
+.control-section input[type="number"],
+.control-section select,
+.control-section textarea {
+  width: 100%;
+  padding: 8px;
+  margin-top: 5px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  color: white;
+  border-radius: 4px;
+  font-family: inherit;
+}
+
+.control-section textarea {
+  resize: vertical;
+  min-height: 80px;
+  font-size: 12px;
+}
+
+.control-section button {
+  width: 100%;
+  padding: 10px;
+  margin-top: 5px;
+  background: rgba(97, 218, 251, 0.2);
+  border: 1px solid #61dafb;
+  color: #61dafb;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.3s;
+}
+
+.control-section button:hover {
+  background: rgba(97, 218, 251, 0.3);
+  transform: translateY(-1px);
+}
+
+.control-section button:active {
+  transform: translateY(0);
+}
+
+.show-controls-btn {
+  position: fixed;
+  top: 10px;
+  right: 10px;
+  padding: 10px 20px;
+  background: rgba(0, 0, 0, 0.7);
+  border: 1px solid #61dafb;
+  color: #61dafb;
+  border-radius: 4px;
+  cursor: pointer;
+  z-index: 999;
+  font-weight: 500;
+  backdrop-filter: blur(10px);
+}
+
+.show-controls-btn:hover {
+  background: rgba(0, 0, 0, 0.9);
+}
+
+.text-container {
+  width: 100%;
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.text-container::-webkit-scrollbar {
+  display: none;
+}
+
+.countdown-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+
+.countdown-number {
+  font-size: 200px;
+  font-weight: bold;
+  color: #61dafb;
+  animation: pulse 1s ease-in-out;
+}
+
+@keyframes pulse {
+  0% {
+    transform: scale(0.5);
+    opacity: 0;
+  }
+  50% {
+    transform: scale(1.2);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.focus-band {
+  border-top: 2px solid rgba(97, 218, 251, 0.5);
+  border-bottom: 2px solid rgba(97, 218, 251, 0.5);
+}
+
+/* Scrollbar styling for controls */
+.controls-panel::-webkit-scrollbar {
+  width: 8px;
+}
+
+.controls-panel::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.controls-panel::-webkit-scrollbar-thumb {
+  background: rgba(97, 218, 251, 0.5);
+  border-radius: 4px;
+}
+
+.controls-panel::-webkit-scrollbar-thumb:hover {
+  background: rgba(97, 218, 251, 0.7);
+}
