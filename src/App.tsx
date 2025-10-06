@@ -27,6 +27,7 @@ interface Settings {
 interface Profile {
   name: string;
   settings: Settings;
+  text: string;
 }
 
 function App() {
@@ -57,6 +58,25 @@ function App() {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [currentProfile, setCurrentProfile] = useState<string>("");
   const [scrollProgress, setScrollProgress] = useState<number>(0);
+  const [confirmDialog, setConfirmDialog] = useState<{
+    show: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+  } | null>(null);
+  const [notification, setNotification] = useState<{
+    show: boolean;
+    message: string;
+    type: 'success' | 'error' | 'info';
+  } | null>(null);
+  const [inputDialog, setInputDialog] = useState<{
+    show: boolean;
+    title: string;
+    placeholder: string;
+    defaultValue: string;
+    onConfirm: (value: string) => void;
+  } | null>(null);
+  const [showShortcuts, setShowShortcuts] = useState(false);
   
   const textContainerRef = useRef<HTMLDivElement>(null);
   const scrollIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -528,28 +548,115 @@ function App() {
     try {
       const newState = await invoke<boolean>("toggle_click_through");
       setClickThrough(newState);
+      
+      // Show helpful notification when enabling click-through
+      if (newState) {
+        setNotification({ 
+          show: true, 
+          message: "Click-through enabled! Press Ctrl/Cmd+I to toggle it back.", 
+          type: 'info' 
+        });
+        setTimeout(() => setNotification(null), 10000); // Show for 10 seconds
+      }
     } catch (error) {
       console.error("Failed to toggle click-through:", error);
     }
   };
 
   const saveProfile = async () => {
-    const name = prompt("Profile name:");
-    if (name) {
-      const newProfile: Profile = { name, settings };
-      const updatedProfiles = [...profiles, newProfile];
-      setProfiles(updatedProfiles);
-      await saveProfiles(updatedProfiles);
-      setCurrentProfile(name);
-    }
+    setInputDialog({
+      show: true,
+      title: "Save Profile",
+      placeholder: "Enter profile name...",
+      defaultValue: "",
+      onConfirm: async (name) => {
+        if (name.trim()) {
+          // If profile exists, update it; else add new
+          const existingIndex = profiles.findIndex((p) => p.name === name);
+          const newProfile: Profile = { name, settings, text };
+          let updatedProfiles;
+          if (existingIndex !== -1) {
+            updatedProfiles = [...profiles];
+            updatedProfiles[existingIndex] = newProfile;
+          } else {
+            updatedProfiles = [...profiles, newProfile];
+          }
+          setProfiles(updatedProfiles);
+          await saveProfiles(updatedProfiles);
+          setCurrentProfile(name);
+          setNotification({ show: true, message: `Profile "${name}" saved successfully!`, type: 'success' });
+          setTimeout(() => setNotification(null), 3000);
+        }
+        setInputDialog(null);
+      }
+    });
   };
 
   const loadProfile = async (profileName: string) => {
     const profile = profiles.find((p) => p.name === profileName);
     if (profile) {
       await updateSettings(profile.settings);
+      // If profile.text is missing, use current text or a default
+      setText(typeof profile.text === "string" ? profile.text : text || "No script saved for this profile.");
       setCurrentProfile(profileName);
+      // Optionally, migrate profile to include text for future saves
+      if (typeof profile.text !== "string") {
+        const migratedProfile = { ...profile, text: text || "" };
+        const updatedProfiles = profiles.map((p) => p.name === profileName ? migratedProfile : p);
+        setProfiles(updatedProfiles);
+        await saveProfiles(updatedProfiles);
+      }
     }
+  };
+
+  const updateProfile = async () => {
+    if (!currentProfile) {
+      setNotification({ show: true, message: "Please select a profile to update.", type: 'error' });
+      setTimeout(() => setNotification(null), 3000);
+      return;
+    }
+    
+    setConfirmDialog({
+      show: true,
+      title: "Update Profile",
+      message: `Update profile "${currentProfile}" with current settings and text?`,
+      onConfirm: async () => {
+        const existingIndex = profiles.findIndex((p) => p.name === currentProfile);
+        if (existingIndex !== -1) {
+          const updatedProfiles = [...profiles];
+          updatedProfiles[existingIndex] = { name: currentProfile, settings, text };
+          setProfiles(updatedProfiles);
+          await saveProfiles(updatedProfiles);
+          setNotification({ show: true, message: `Profile "${currentProfile}" updated successfully!`, type: 'success' });
+          setTimeout(() => setNotification(null), 3000);
+        }
+        setConfirmDialog(null);
+      }
+    });
+  };
+
+  const deleteProfile = async () => {
+    if (!currentProfile) {
+      setNotification({ show: true, message: "Please select a profile to delete.", type: 'error' });
+      setTimeout(() => setNotification(null), 3000);
+      return;
+    }
+    
+    setConfirmDialog({
+      show: true,
+      title: "Delete Profile",
+      message: `Are you sure you want to delete profile "${currentProfile}"? This action cannot be undone.`,
+      onConfirm: async () => {
+        const updatedProfiles = profiles.filter((p) => p.name !== currentProfile);
+        setProfiles(updatedProfiles);
+        await saveProfiles(updatedProfiles);
+        const deletedProfileName = currentProfile;
+        setCurrentProfile("");
+        setNotification({ show: true, message: `Profile "${deletedProfileName}" deleted successfully!`, type: 'success' });
+        setTimeout(() => setNotification(null), 3000);
+        setConfirmDialog(null);
+      }
+    });
   };
 
   const textStyle: React.CSSProperties = {
@@ -568,6 +675,145 @@ function App() {
 
   return (
     <div className="app">
+      {/* Custom Confirmation Dialog */}
+      {confirmDialog && confirmDialog.show && (
+        <div className="dialog-overlay" onClick={() => setConfirmDialog(null)}>
+          <div className="dialog-box" onClick={(e) => e.stopPropagation()}>
+            <h3 className="dialog-title">{confirmDialog.title}</h3>
+            <p className="dialog-message">{confirmDialog.message}</p>
+            <div className="dialog-buttons">
+              <button 
+                className="dialog-button dialog-button-cancel"
+                onClick={() => setConfirmDialog(null)}
+              >
+                Cancel
+              </button>
+              <button 
+                className="dialog-button dialog-button-confirm"
+                onClick={confirmDialog.onConfirm}
+              >
+                Confirm
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Custom Input Dialog */}
+      {inputDialog && inputDialog.show && (
+        <div className="dialog-overlay" onClick={() => setInputDialog(null)}>
+          <div className="dialog-box" onClick={(e) => e.stopPropagation()}>
+            <h3 className="dialog-title">{inputDialog.title}</h3>
+            <input
+              type="text"
+              className="dialog-input"
+              placeholder={inputDialog.placeholder}
+              defaultValue={inputDialog.defaultValue}
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  inputDialog.onConfirm(e.currentTarget.value);
+                } else if (e.key === 'Escape') {
+                  setInputDialog(null);
+                }
+              }}
+            />
+            <div className="dialog-buttons">
+              <button 
+                className="dialog-button dialog-button-cancel"
+                onClick={() => setInputDialog(null)}
+              >
+                Cancel
+              </button>
+              <button 
+                className="dialog-button dialog-button-confirm"
+                onClick={(e) => {
+                  const input = (e.currentTarget.parentElement?.previousElementSibling as HTMLInputElement);
+                  if (input) {
+                    inputDialog.onConfirm(input.value);
+                  }
+                }}
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Notification Toast */}
+      {notification && notification.show && (
+        <div className={`notification notification-${notification.type}`}>
+          <span className="notification-icon">
+            {notification.type === 'success' && '✓'}
+            {notification.type === 'error' && '✕'}
+            {notification.type === 'info' && 'ℹ'}
+          </span>
+          <span className="notification-message">{notification.message}</span>
+        </div>
+      )}
+
+      {/* Keyboard Shortcuts Help Panel */}
+      {showShortcuts && (
+        <div className="shortcuts-overlay" onClick={() => setShowShortcuts(false)}>
+          <div className="shortcuts-panel" onClick={(e) => e.stopPropagation()}>
+            <div className="shortcuts-header">
+              <h2>⌨️ Keyboard Shortcuts</h2>
+              <button className="shortcuts-close" onClick={() => setShowShortcuts(false)}>✕</button>
+            </div>
+            <div className="shortcuts-content">
+              <div className="shortcuts-section">
+                <h3>Playback Controls</h3>
+                <div className="shortcut-item">
+                  <kbd>Ctrl</kbd> + <kbd>Space</kbd>
+                  <span>Play / Pause</span>
+                </div>
+                <div className="shortcut-item">
+                  <kbd>Esc</kbd>
+                  <span>Stop playback or toggle controls</span>
+                </div>
+              </div>
+
+              <div className="shortcuts-section">
+                <h3>Speed Adjustment</h3>
+                <div className="shortcut-item">
+                  <kbd>Ctrl</kbd> + <kbd>↑</kbd>
+                  <span>Increase speed (+10 WPM)</span>
+                </div>
+                <div className="shortcut-item">
+                  <kbd>Ctrl</kbd> + <kbd>↓</kbd>
+                  <span>Decrease speed (-10 WPM)</span>
+                </div>
+              </div>
+
+              <div className="shortcuts-section">
+                <h3>Text Color</h3>
+                <div className="shortcut-item">
+                  <kbd>Ctrl</kbd> + <kbd>[</kbd>
+                  <span>Darken text color</span>
+                </div>
+                <div className="shortcut-item">
+                  <kbd>Ctrl</kbd> + <kbd>]</kbd>
+                  <span>Lighten text color</span>
+                </div>
+              </div>
+
+              <div className="shortcuts-section">
+                <h3>Click-Through Mode</h3>
+                <div className="shortcut-item">
+                  <kbd>Ctrl</kbd> + <kbd>I</kbd>
+                  <span>Toggle click-through (when enabled)</span>
+                </div>
+              </div>
+
+              <div className="shortcuts-note">
+                <strong>Note:</strong> On macOS, use <kbd>Cmd</kbd> instead of <kbd>Ctrl</kbd>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Drag region when controls are hidden */}
       {!showControls && (
         <div className="drag-handle" data-tauri-drag-region onMouseDown={handleDragStart}>
@@ -655,6 +901,10 @@ function App() {
                 <option value="karaoke">Karaoke</option>
               </select>
             </label>
+            <div style={{ fontSize: "11px", color: "#888", marginTop: "5px" }}>
+                • Set a countdown for controlled playback.
+              </div>
+
           </div>
 
           <div className="control-section">
@@ -669,6 +919,9 @@ function App() {
                 onChange={(e) => updateSettings({ ...settings, wpm: parseInt(e.target.value) })}
               />
             </label>
+            <div style={{ fontSize: "11px", color: "#888", marginTop: "5px" }}>
+                • Control the playback speed.
+              </div>
           </div>
 
           <div className="control-section">
@@ -782,6 +1035,9 @@ function App() {
                 onChange={(e) => updateSettings({ ...settings, margin_right: parseInt(e.target.value) })}
               />
             </label>
+            <div style={{ fontSize: "11px", color: "#888", marginTop: "5px" }}>
+                • Adjust the borders of the script.
+              </div>
           </div>
 
           <div className="control-section">
@@ -814,6 +1070,9 @@ function App() {
                 onChange={(e) => updateSettings({ ...settings, focus_band_height: parseInt(e.target.value) })}
               />
             </label>
+            <div style={{ fontSize: "11px", color: "#888", marginTop: "5px" }}>
+                • Enables focus mode.
+              </div>
           </div>
 
           <div className="control-section">
@@ -821,66 +1080,117 @@ function App() {
             <button onClick={toggleClickThrough}>
               {clickThrough ? "Disable" : "Enable"} Click-Through
             </button>
+            <div style={{ fontSize: "11px", color: "#888", marginTop: "5px" }}>
+                • Interact with background apps while its on top, making it invisible. 
+              </div>
             <button onClick={() => setShowControls(false)}>Hide Controls</button>
             <button onClick={saveSession}>Save Session</button>
+            <button onClick={() => setShowShortcuts(true)}>⌨️ Keyboard Shortcuts</button>
           </div>
 
           <div className="control-section">
             <h3>Profiles</h3>
-            <button onClick={saveProfile}>Save Profile</button>
-            <select
-              value={currentProfile}
-              onChange={(e) => loadProfile(e.target.value)}
-            >
-              <option value="">Select Profile</option>
-              {profiles.map((profile) => (
-                <option key={profile.name} value={profile.name}>
-                  {profile.name}
-                </option>
-              ))}
-            </select>
+            <div>
+              <label htmlFor="profile-select">Profile:</label>
+              <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                <select
+                  id="profile-select"
+                  value={currentProfile}
+                  onChange={e => setCurrentProfile(e.target.value)}
+                  style={{ minWidth: "140px" }}
+                >
+                  <option value="">Select profile</option>
+                  {profiles.map((profile) => (
+                    <option key={profile.name} value={profile.name}>{profile.name}</option>
+                  ))}
+                </select>
+                <button onClick={saveProfile}>Save Profile</button>
+                <button onClick={() => loadProfile(currentProfile)} disabled={!currentProfile}>Load Profile</button>
+              </div>
+            </div>
+          </div>
+
+          <div className="control-section">
+            <h3>Profile Management</h3>
+            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+              <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                <button 
+                  onClick={updateProfile} 
+                  disabled={!currentProfile}
+                  style={{ 
+                    background: currentProfile ? "#61dafb" : "#666",
+                    color: "white",
+                    border: "none",
+                    padding: "8px 16px",
+                    borderRadius: "4px",
+                    cursor: currentProfile ? "pointer" : "not-allowed"
+                  }}
+                >
+                  Update Selected Profile
+                </button>
+                <button 
+                  onClick={deleteProfile} 
+                  disabled={!currentProfile}
+                  style={{ 
+                    background: currentProfile ? "#ff6b6b" : "#666",
+                    color: "white",
+                    border: "none",
+                    padding: "8px 16px",
+                    borderRadius: "4px",
+                    cursor: currentProfile ? "pointer" : "not-allowed"
+                  }}
+                >
+                  Delete Selected Profile
+                </button>
+              </div>
+              {currentProfile && (
+                <div style={{ fontSize: "12px", color: "#61dafb", marginTop: "5px" }}>
+                  Selected: <strong>{currentProfile}</strong>
+                </div>
+              )}
+              <div style={{ fontSize: "11px", color: "#888", marginTop: "5px" }}>
+                • Update: Saves current settings and text to the selected profile<br/>
+                • Delete: Permanently removes the selected profile (requires confirmation)
+              </div>
+            </div>
           </div>
         </div>
       )}
 
       {!showControls && (
         <button
-          className="show-controls-btn"
+          className="show-controls-button"
           onClick={() => setShowControls(true)}
+          style={{
+            position: "absolute",
+            top: "10px",
+            right: "10px",
+            padding: "10px 20px",
+            fontSize: "16px",
+            cursor: "pointer",
+            zIndex: 1000,
+          }}
         >
           Show Controls
         </button>
       )}
 
+      {/* Text container */}
       <div
         className="text-container"
         ref={textContainerRef}
         style={{
-          position: "absolute",
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          overflow: "hidden",
           pointerEvents: clickThrough ? "none" : "auto",
+          userSelect: clickThrough ? "none" : "auto",
         }}
       >
-        {settings.focus_band_enabled && (
-          <div
-            className="focus-band"
-            style={{
-              position: "fixed",
-              left: 0,
-              right: 0,
-              top: `${settings.focus_band_position}%`,
-              height: `${settings.focus_band_height}%`,
-              backgroundColor: "rgba(255, 255, 255, 0.1)",
-              pointerEvents: "none",
-              zIndex: 100,
-            }}
-          />
-        )}
-        <div style={textStyle}>{text}</div>
+        <div className="text-content" style={textStyle}>
+          {text.split("\n").map((line, index) => (
+            <div key={index} className="text-line">
+              {line}
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
