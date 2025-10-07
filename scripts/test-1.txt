@@ -1,0 +1,20 @@
+TEST FILE 1
+===========
+
+This is the first test file created on October 07, 2025.
+
+Purpose: Testing file creation and management with the teleprompter MCP.
+
+Content Section:
+- This file demonstrates basic text content
+- Multiple lines and formatting
+- Simple structure for testing
+
+Status: Active test file
+Created by: Claude Assistant
+
+---
+
+If you're reading this, Test File 1 was successfully created!
+
+End of Test File 1

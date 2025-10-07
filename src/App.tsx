@@ -1,10 +1,12 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { readTextFile } from "@tauri-apps/plugin-fs";
 import { Store } from "@tauri-apps/plugin-store";
-import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
+import { register, unregisterAll } from "@tauri-apps/plugin-global-shortcut";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import "./App.css";
 
 interface Settings {
@@ -24,11 +26,15 @@ interface Settings {
   text_color: string;
 }
 
-interface Profile {
+interface LoadedFile {
+  id: string;
   name: string;
-  settings: Settings;
-  text: string;
+  path: string;
+  content: string;
+  loadedAt: Date;
 }
+
+const SCRIPT_FILE_PATH = "scripts/current.txt";
 
 function App() {
   const [text, setText] = useState("");
@@ -55,8 +61,6 @@ function App() {
   const [countdown, setCountdown] = useState(0);
   const [isCountingDown, setIsCountingDown] = useState(false);
   const [scrollMode, setScrollMode] = useState<"continuous" | "karaoke">("continuous");
-  const [profiles, setProfiles] = useState<Profile[]>([]);
-  const [currentProfile, setCurrentProfile] = useState<string>("");
   const [scrollProgress, setScrollProgress] = useState<number>(0);
   const [confirmDialog, setConfirmDialog] = useState<{
     show: boolean;
@@ -76,7 +80,16 @@ function App() {
     defaultValue: string;
     onConfirm: (value: string) => void;
   } | null>(null);
+  const [newFileDialog, setNewFileDialog] = useState<{
+    show: boolean;
+    filename: string;
+    content: string;
+  } | null>(null);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [loadedFiles, setLoadedFiles] = useState<LoadedFile[]>([]);
+  const [currentFileId, setCurrentFileId] = useState<string | null>(null);
+  const [showFileManager, setShowFileManager] = useState(true);
+  const [textareaMaximized, setTextareaMaximized] = useState(false);
   
   const textContainerRef = useRef<HTMLDivElement>(null);
   const scrollIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -108,6 +121,62 @@ function App() {
   useEffect(() => {
     clickThroughRef.current = clickThrough;
   }, [clickThrough]);
+
+  useEffect(() => {
+    if (!isTauri()) {
+      return;
+    }
+
+    let disposed = false;
+    let scriptUpdateListener: Promise<UnlistenFn> | undefined;
+    let scriptErrorListener: Promise<UnlistenFn> | undefined;
+
+    const setupWatcher = async () => {
+      try {
+        await invoke("start_script_watcher", { path: SCRIPT_FILE_PATH });
+        if (disposed) {
+          await invoke("stop_script_watcher").catch(() => {});
+          return;
+        }
+
+        scriptUpdateListener = listen<{ text?: string }>("script-updated", (event) => {
+          const payload = event.payload;
+          if (payload && typeof payload.text === "string") {
+            const incoming = payload.text;
+            setText((prev) => {
+              if (prev === incoming) {
+                return prev;
+              }
+              return incoming;
+            });
+            setScrollPosition(0);
+          }
+        });
+
+        scriptErrorListener = listen<{ error?: string }>("script-watcher-error", (event) => {
+          const message = event.payload?.error;
+          if (message) {
+            console.error("Script watcher error:", message);
+          }
+        });
+      } catch (error) {
+        console.error("Failed to start live script watcher:", error);
+      }
+    };
+
+    setupWatcher();
+
+    return () => {
+      disposed = true;
+      if (scriptUpdateListener) {
+        scriptUpdateListener.then((unlisten) => unlisten()).catch(() => {});
+      }
+      if (scriptErrorListener) {
+        scriptErrorListener.then((unlisten) => unlisten()).catch(() => {});
+      }
+      invoke("stop_script_watcher").catch(() => {});
+    };
+  }, []);
 
   // Helper function to adjust color brightness
   const adjustColorBrightness = (hexColor: string, amount: number): string => {
@@ -200,52 +269,276 @@ function App() {
       
       store.current = await Store.load("settings.json");
       await loadSettings();
-      await loadProfiles();
       await loadSession();
+      await loadScriptsFromDirectory();
     };
     initStore();
   }, []);
 
-  // Track shortcut registration across hot reloads
+  // Load scripts from the default scripts directory
+  const loadScriptsFromDirectory = async () => {
+    if (!isTauri()) return;
+    
+    try {
+      console.log("Loading scripts from directory...");
+      const scripts = await invoke<Array<{ name: string; path: string; content: string }>>(
+        "get_scripts_from_directory"
+      );
+      
+      console.log(`Found ${scripts.length} script(s):`, scripts.map(s => s.name));
+      
+      if (scripts.length > 0) {
+        // Try to preserve existing file IDs based on path
+        const newFiles: LoadedFile[] = scripts.map((script) => {
+          // Check if this file already exists (by path)
+          const existingFile = loadedFiles.find(f => f.path === script.path);
+          
+          return {
+            id: existingFile?.id || Date.now().toString() + Math.random().toString(36).substring(7),
+            name: script.name,
+            path: script.path,
+            content: script.content,
+            loadedAt: existingFile?.loadedAt || new Date(),
+          };
+        });
+        
+        setLoadedFiles(newFiles);
+        
+        // Handle current file selection
+        if (currentFileId) {
+          // Check if current file still exists
+          const currentFileStillExists = newFiles.find(f => f.id === currentFileId);
+          if (!currentFileStillExists) {
+            // Current file was deleted, switch to first file
+            setCurrentFileId(newFiles[0].id);
+            setText(newFiles[0].content);
+            console.log("Current file no longer exists, switched to:", newFiles[0].name);
+          } else {
+            // Update content of current file if it changed
+            const updatedCurrentFile = newFiles.find(f => f.id === currentFileId);
+            if (updatedCurrentFile && updatedCurrentFile.content !== text) {
+              setText(updatedCurrentFile.content);
+              console.log("Updated content of current file:", updatedCurrentFile.name);
+            }
+          }
+        } else if (newFiles.length > 0) {
+          // No current file, select the first one
+          setCurrentFileId(newFiles[0].id);
+          setText(newFiles[0].content);
+          console.log("Selected first file:", newFiles[0].name);
+        }
+        
+        setNotification({ show: true, message: `Loaded ${scripts.length} script(s)`, type: 'success' });
+        setTimeout(() => setNotification(null), 2000);
+      } else {
+        // No files found, clear the list
+        console.log("No script files found in directory");
+        setLoadedFiles([]);
+        setCurrentFileId(null);
+        setText("");
+        setNotification({ show: true, message: "No script files found", type: 'info' });
+        setTimeout(() => setNotification(null), 2000);
+      }
+    } catch (error) {
+      console.error("Failed to load scripts from directory:", error);
+      setNotification({ show: true, message: "Failed to load scripts", type: 'error' });
+      setTimeout(() => setNotification(null), 3000);
+    }
+  };
+
+  // Watch the scripts directory for changes
+  useEffect(() => {
+    if (!isTauri()) return;
+
+    let unlisten: UnlistenFn | null = null;
+
+    const setupDirectoryWatcher = async () => {
+      try {
+        // Start watching the scripts directory
+        await invoke("watch_scripts_directory");
+        
+        // Listen for directory updates
+        unlisten = await listen<Array<{ name: string; path: string; content: string }>>(
+          "scripts-directory-updated",
+          (event) => {
+            const scripts = event.payload;
+            
+            console.log("Scripts directory updated, reloading files...");
+            
+            if (scripts.length > 0) {
+              const newFiles: LoadedFile[] = scripts.map((script) => ({
+                id: Date.now().toString() + Math.random().toString(36).substring(7),
+                name: script.name,
+                path: script.path,
+                content: script.content,
+                loadedAt: new Date(),
+              }));
+              
+              // Preserve the currently active file if it still exists
+              const currentFile = loadedFiles.find(f => f.id === currentFileId);
+              let newCurrentFileId = currentFileId;
+              
+              if (currentFile) {
+                // Find the same file in the new list by path
+                const matchingFile = newFiles.find(f => f.path === currentFile.path);
+                if (matchingFile) {
+                  newCurrentFileId = matchingFile.id;
+                  // Update the text if content changed
+                  if (matchingFile.content !== currentFile.content) {
+                    setText(matchingFile.content);
+                  }
+                } else {
+                  // Current file was deleted, switch to first file
+                  newCurrentFileId = newFiles[0]?.id || null;
+                  if (newFiles[0]) {
+                    setText(newFiles[0].content);
+                  }
+                }
+              }
+              
+              setLoadedFiles(newFiles);
+              setCurrentFileId(newCurrentFileId);
+              
+              setNotification({
+                show: true,
+                message: "Scripts directory updated",
+                type: "info",
+              });
+              setTimeout(() => setNotification(null), 2000);
+            } else {
+              // All files were deleted
+              setLoadedFiles([]);
+              setCurrentFileId(null);
+              setText("");
+            }
+          }
+        );
+      } catch (error) {
+        console.error("Failed to setup directory watcher:", error);
+      }
+    };
+
+    setupDirectoryWatcher();
+
+    return () => {
+      if (unlisten) {
+        unlisten();
+      }
+      if (isTauri()) {
+        invoke("stop_watching_scripts_directory").catch(console.error);
+      }
+    };
+  }, []);
+
+  // File watching - listen for file updates from Tauri
+  useEffect(() => {
+    if (!isTauri()) return;
+
+    let unlisten: UnlistenFn | null = null;
+
+    const setupFileWatcher = async () => {
+      unlisten = await listen<{ fileId: string; content: string; path: string }>(
+        "file-updated",
+        (event) => {
+          const { fileId, content, path } = event.payload;
+          
+          // Update the file in the loaded files list
+          setLoadedFiles((prev) => {
+            const updated = prev.map((file) => {
+              if (file.id === fileId) {
+                return { ...file, content };
+              }
+              return file;
+            });
+            return updated;
+          });
+
+          // If this is the currently active file, update the text
+          if (currentFileId === fileId) {
+            setText(content);
+            setNotification({
+              show: true,
+              message: `File updated: ${path.split(/[\\/]/).pop()}`,
+              type: "info",
+            });
+            setTimeout(() => setNotification(null), 2000);
+          }
+        }
+      );
+    };
+
+    setupFileWatcher();
+
+    return () => {
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  }, [currentFileId]);
+
+  // Watch/unwatch files as they are added or removed
+  useEffect(() => {
+    if (!isTauri()) return;
+
+    const watchFiles = async () => {
+      for (const file of loadedFiles) {
+        try {
+          await invoke("watch_file", {
+            fileId: file.id,
+            path: file.path,
+          });
+        } catch (error) {
+          console.error(`Failed to watch file ${file.name}:`, error);
+        }
+      }
+    };
+
+    watchFiles();
+
+    // Cleanup: unwatch files when component unmounts
+    return () => {
+      if (isTauri()) {
+        invoke("unwatch_all_files").catch(console.error);
+      }
+    };
+  }, [loadedFiles]);
+
+  // Track shortcut registration across hot reloads with a module-level variable
+  // This persists across React re-renders and strict mode double mounting
   const shortcutsRegisteredRef = useRef(false);
+  const isRegisteringRef = useRef(false);
 
   // Register global shortcuts
   useEffect(() => {
     let registered = false;
     
     const registerShortcuts = async () => {
-      // In production, only register once. In dev, allow re-registration after cleanup
-      if (shortcutsRegisteredRef.current) {
-        console.log("Shortcuts already registered, skipping");
+      // Skip if already registered OR currently registering
+      if (shortcutsRegisteredRef.current || isRegisteringRef.current) {
+        console.log("Shortcuts already registered or registration in progress, skipping");
         return;
       }
       
+      // Mark as registering IMMEDIATELY to prevent concurrent registration attempts
+      isRegisteringRef.current = true;
       shortcutsRegisteredRef.current = true;
       
-      // Wait longer for Tauri to be ready and avoid race conditions
+      // Wait for Tauri to be ready
       await new Promise(resolve => setTimeout(resolve, 300));
       
       if (!isTauri()) {
         console.warn("Not in Tauri, skipping shortcut registration");
+        isRegisteringRef.current = false;
+        shortcutsRegisteredRef.current = false;
         return;
       }
       
       try {
-        // Unregister all shortcuts first to avoid conflicts
-        const shortcuts = [
-          "CommandOrControl+Space",
-          "CommandOrControl+Up",
-          "CommandOrControl+Down",
-          "CommandOrControl+BracketLeft",
-          "CommandOrControl+BracketRight",
-          "CommandOrControl+I"
-        ];
-        
-        for (const shortcut of shortcuts) {
-          await unregister(shortcut).catch(() => {
-            // Silently ignore if not registered
-          });
-        }
+        // Unregister ALL shortcuts first to avoid conflicts
+        console.log("Unregistering all existing shortcuts...");
+        await unregisterAll().catch((err) => {
+          console.warn("Failed to unregister all shortcuts:", err);
+        });
         
         // Small delay after unregistering
         await new Promise(resolve => setTimeout(resolve, 100));
@@ -314,11 +607,20 @@ function App() {
           }
         });
         
+        // Toggle file manager
+        await register("CommandOrControl+F", () => {
+          setShowFileManager(prev => !prev);
+        });
+        
         registered = true;
         console.log("Global shortcuts registered successfully");
       } catch (error) {
         console.error("Failed to register shortcuts:", error);
         shortcutsRegisteredRef.current = false; // Allow retry on error
+        isRegisteringRef.current = false; // Reset registering flag on error
+      } finally {
+        // Always reset the registering flag when done
+        isRegisteringRef.current = false;
       }
     };
 
@@ -334,13 +636,9 @@ function App() {
       }
       
       console.log("Cleaning up shortcuts (dev mode)");
-      unregister("CommandOrControl+Space").catch(console.error);
-      unregister("CommandOrControl+Up").catch(console.error);
-      unregister("CommandOrControl+Down").catch(console.error);
-      unregister("CommandOrControl+BracketLeft").catch(console.error);
-      unregister("CommandOrControl+BracketRight").catch(console.error);
-      unregister("CommandOrControl+I").catch(console.error);
+      unregisterAll().catch(console.error);
       shortcutsRegisteredRef.current = false;
+      isRegisteringRef.current = false;
     };
   }, []); // Remove settings dependency
 
@@ -451,26 +749,6 @@ function App() {
     }
   };
 
-  const loadProfiles = async () => {
-    try {
-      const savedProfiles = await store.current?.get<Profile[]>("profiles");
-      if (savedProfiles) {
-        setProfiles(savedProfiles);
-      }
-    } catch (error) {
-      console.error("Failed to load profiles:", error);
-    }
-  };
-
-  const saveProfiles = async (newProfiles: Profile[]) => {
-    try {
-      await store.current?.set("profiles", newProfiles);
-      await store.current?.save();
-    } catch (error) {
-      console.error("Failed to save profiles:", error);
-    }
-  };
-
   const loadSession = async () => {
     try {
       const session = await store.current?.get<{ text: string; position: number }>("session");
@@ -532,12 +810,100 @@ function App() {
 
       if (selected && typeof selected === "string") {
         const content = await readTextFile(selected);
+        const fileName = selected.split(/[\\/]/).pop() || "Untitled";
+        
+        // Check if file is already loaded
+        const existingFile = loadedFiles.find(f => f.path === selected);
+        if (existingFile) {
+          setNotification({ show: true, message: `File "${fileName}" is already loaded`, type: 'info' });
+          setTimeout(() => setNotification(null), 3000);
+          setCurrentFileId(existingFile.id);
+          setText(existingFile.content);
+          setScrollPosition(0);
+          return;
+        }
+        
+        // Add file to the loaded files list
+        const newFile: LoadedFile = {
+          id: Date.now().toString(),
+          name: fileName,
+          path: selected,
+          content: content,
+          loadedAt: new Date(),
+        };
+        
+        setLoadedFiles(prev => [...prev, newFile]);
+        setCurrentFileId(newFile.id);
         setText(content);
         setScrollPosition(0);
+        
+        setNotification({ show: true, message: `File "${fileName}" loaded successfully!`, type: 'success' });
+        setTimeout(() => setNotification(null), 3000);
       }
     } catch (error) {
       console.error("Failed to import file:", error);
+      setNotification({ show: true, message: "Failed to import file", type: 'error' });
+      setTimeout(() => setNotification(null), 3000);
     }
+  };
+
+  const switchToFile = (fileId: string) => {
+    const file = loadedFiles.find(f => f.id === fileId);
+    if (file) {
+      setCurrentFileId(fileId);
+      setText(file.content);
+      setScrollPosition(0);
+      setNotification({ show: true, message: `Switched to "${file.name}"`, type: 'info' });
+      setTimeout(() => setNotification(null), 2000);
+    }
+  };
+
+  const removeFile = (fileId: string) => {
+    const file = loadedFiles.find(f => f.id === fileId);
+    if (!file) return;
+    
+    setConfirmDialog({
+      show: true,
+      title: "Remove File",
+      message: `Are you sure you want to remove "${file.name}" from the file manager?`,
+      onConfirm: () => {
+        setLoadedFiles(prev => prev.filter(f => f.id !== fileId));
+        
+        // If removing the current file, clear or switch to another
+        if (currentFileId === fileId) {
+          const remaining = loadedFiles.filter(f => f.id !== fileId);
+          if (remaining.length > 0) {
+            setCurrentFileId(remaining[0].id);
+            setText(remaining[0].content);
+          } else {
+            setCurrentFileId(null);
+            setText("");
+          }
+        }
+        
+        setNotification({ show: true, message: `File "${file.name}" removed`, type: 'success' });
+        setTimeout(() => setNotification(null), 3000);
+        setConfirmDialog(null);
+      }
+    });
+  };
+
+  const clearAllFiles = () => {
+    if (loadedFiles.length === 0) return;
+    
+    setConfirmDialog({
+      show: true,
+      title: "Clear All Files",
+      message: `Are you sure you want to remove all ${loadedFiles.length} file(s) from the file manager?`,
+      onConfirm: () => {
+        setLoadedFiles([]);
+        setCurrentFileId(null);
+        setText("");
+        setNotification({ show: true, message: "All files cleared", type: 'success' });
+        setTimeout(() => setNotification(null), 3000);
+        setConfirmDialog(null);
+      }
+    });
   };
 
   const toggleClickThrough = async () => {
@@ -563,100 +929,90 @@ function App() {
     }
   };
 
-  const saveProfile = async () => {
+  const saveScript = async () => {
     setInputDialog({
       show: true,
-      title: "Save Profile",
-      placeholder: "Enter profile name...",
+      title: "Save Script",
+      placeholder: "Enter script name (e.g., my-script.txt)...",
       defaultValue: "",
       onConfirm: async (name) => {
         if (name.trim()) {
-          // If profile exists, update it; else add new
-          const existingIndex = profiles.findIndex((p) => p.name === name);
-          const newProfile: Profile = { name, settings, text };
-          let updatedProfiles;
-          if (existingIndex !== -1) {
-            updatedProfiles = [...profiles];
-            updatedProfiles[existingIndex] = newProfile;
-          } else {
-            updatedProfiles = [...profiles, newProfile];
+          try {
+            await invoke<string>('save_script_to_directory', { 
+              filename: name.trim(), 
+              content: text 
+            });
+            setNotification({ 
+              show: true, 
+              message: `Script "${name}" saved successfully!`, 
+              type: 'success' 
+            });
+            setTimeout(() => setNotification(null), 3000);
+            // Refresh the file list
+            await loadScriptsFromDirectory();
+          } catch (error) {
+            console.error('Failed to save script:', error);
+            setNotification({ 
+              show: true, 
+              message: `Failed to save script: ${error}`, 
+              type: 'error' 
+            });
+            setTimeout(() => setNotification(null), 5000);
           }
-          setProfiles(updatedProfiles);
-          await saveProfiles(updatedProfiles);
-          setCurrentProfile(name);
-          setNotification({ show: true, message: `Profile "${name}" saved successfully!`, type: 'success' });
-          setTimeout(() => setNotification(null), 3000);
         }
         setInputDialog(null);
       }
     });
   };
 
-  const loadProfile = async (profileName: string) => {
-    const profile = profiles.find((p) => p.name === profileName);
-    if (profile) {
-      await updateSettings(profile.settings);
-      // If profile.text is missing, use current text or a default
-      setText(typeof profile.text === "string" ? profile.text : text || "No script saved for this profile.");
-      setCurrentProfile(profileName);
-      // Optionally, migrate profile to include text for future saves
-      if (typeof profile.text !== "string") {
-        const migratedProfile = { ...profile, text: text || "" };
-        const updatedProfiles = profiles.map((p) => p.name === profileName ? migratedProfile : p);
-        setProfiles(updatedProfiles);
-        await saveProfiles(updatedProfiles);
-      }
-    }
+  const createNewFile = () => {
+    setNewFileDialog({
+      show: true,
+      filename: "",
+      content: ""
+    });
   };
 
-  const updateProfile = async () => {
-    if (!currentProfile) {
-      setNotification({ show: true, message: "Please select a profile to update.", type: 'error' });
+  const handleSaveNewFile = async () => {
+    if (!newFileDialog) return;
+    
+    const filename = newFileDialog.filename.trim();
+    const content = newFileDialog.content;
+    
+    if (!filename) {
+      setNotification({ 
+        show: true, 
+        message: "Please enter a filename", 
+        type: 'error' 
+      });
       setTimeout(() => setNotification(null), 3000);
       return;
     }
     
-    setConfirmDialog({
-      show: true,
-      title: "Update Profile",
-      message: `Update profile "${currentProfile}" with current settings and text?`,
-      onConfirm: async () => {
-        const existingIndex = profiles.findIndex((p) => p.name === currentProfile);
-        if (existingIndex !== -1) {
-          const updatedProfiles = [...profiles];
-          updatedProfiles[existingIndex] = { name: currentProfile, settings, text };
-          setProfiles(updatedProfiles);
-          await saveProfiles(updatedProfiles);
-          setNotification({ show: true, message: `Profile "${currentProfile}" updated successfully!`, type: 'success' });
-          setTimeout(() => setNotification(null), 3000);
-        }
-        setConfirmDialog(null);
-      }
-    });
-  };
-
-  const deleteProfile = async () => {
-    if (!currentProfile) {
-      setNotification({ show: true, message: "Please select a profile to delete.", type: 'error' });
+    try {
+      await invoke<string>('save_script_to_directory', { 
+        filename, 
+        content 
+      });
+      setNotification({ 
+        show: true, 
+        message: `Script "${filename}" created successfully!`, 
+        type: 'success' 
+      });
       setTimeout(() => setNotification(null), 3000);
-      return;
+      // Refresh the file list
+      await loadScriptsFromDirectory();
+      // Close the dialog
+      setNewFileDialog(null);
+    } catch (error) {
+      console.error('Failed to create file:', error);
+      setNotification({ 
+        show: true, 
+        message: `Failed to create file: ${error}`, 
+        type: 'error' 
+      });
+      setTimeout(() => setNotification(null), 5000);
     }
-    
-    setConfirmDialog({
-      show: true,
-      title: "Delete Profile",
-      message: `Are you sure you want to delete profile "${currentProfile}"? This action cannot be undone.`,
-      onConfirm: async () => {
-        const updatedProfiles = profiles.filter((p) => p.name !== currentProfile);
-        setProfiles(updatedProfiles);
-        await saveProfiles(updatedProfiles);
-        const deletedProfileName = currentProfile;
-        setCurrentProfile("");
-        setNotification({ show: true, message: `Profile "${deletedProfileName}" deleted successfully!`, type: 'success' });
-        setTimeout(() => setNotification(null), 3000);
-        setConfirmDialog(null);
-      }
-    });
   };
 
   const textStyle: React.CSSProperties = {
@@ -741,6 +1097,111 @@ function App() {
         </div>
       )}
 
+      {/* New File Dialog */}
+      {newFileDialog && newFileDialog.show && (
+        <div className="dialog-overlay" onClick={() => setNewFileDialog(null)}>
+          <div className="dialog-box" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '600px', width: '90%' }}>
+            <h3 className="dialog-title">Create New Script</h3>
+            <input
+              type="text"
+              className="dialog-input"
+              placeholder="Enter filename (e.g., my-script.txt)..."
+              value={newFileDialog.filename}
+              onChange={(e) => setNewFileDialog({ ...newFileDialog, filename: e.target.value })}
+              autoFocus
+              style={{ marginBottom: '10px' }}
+            />
+            <textarea
+              className="dialog-input"
+              placeholder="Write your script here..."
+              value={newFileDialog.content}
+              onChange={(e) => setNewFileDialog({ ...newFileDialog, content: e.target.value })}
+              rows={15}
+              style={{ 
+                resize: 'vertical',
+                minHeight: '200px',
+                fontFamily: 'inherit',
+                fontSize: '14px',
+                lineHeight: '1.5'
+              }}
+            />
+            <div className="dialog-buttons">
+              <button 
+                className="dialog-button dialog-button-cancel"
+                onClick={() => setNewFileDialog(null)}
+              >
+                Cancel
+              </button>
+              <button 
+                className="dialog-button dialog-button-confirm"
+                onClick={handleSaveNewFile}
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Maximized Textarea Modal */}
+      {textareaMaximized && (
+        <div className="dialog-overlay" onClick={() => setTextareaMaximized(false)}>
+          <div 
+            className="dialog-box" 
+            onClick={(e) => e.stopPropagation()} 
+            style={{ 
+              maxWidth: '95vw', 
+              width: '95vw',
+              height: '90vh',
+              maxHeight: '90vh',
+              display: 'flex',
+              flexDirection: 'column'
+            }}
+          >
+            <div style={{ 
+              display: 'flex', 
+              justifyContent: 'space-between', 
+              alignItems: 'center',
+              marginBottom: '15px'
+            }}>
+              <h3 className="dialog-title" style={{ margin: 0 }}>Script Editor</h3>
+              <div style={{ fontSize: '12px', color: 'rgba(97, 218, 251, 0.7)' }}>
+                {text.length} characters • {text.split(/\n/).length} lines
+              </div>
+            </div>
+            <textarea
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              placeholder="Write your script here..."
+              autoFocus
+              style={{ 
+                flex: 1,
+                width: '100%',
+                padding: '16px',
+                fontSize: '16px',
+                lineHeight: '1.8',
+                backgroundColor: 'rgba(0, 0, 0, 0.4)',
+                border: '1px solid rgba(97, 218, 251, 0.3)',
+                borderRadius: '6px',
+                color: '#e0e0e0',
+                resize: 'none',
+                fontFamily: "'Consolas', 'Monaco', 'Courier New', monospace",
+                marginBottom: '15px'
+              }}
+            />
+            <div className="dialog-buttons">
+              <button 
+                className="dialog-button dialog-button-confirm"
+                onClick={() => setTextareaMaximized(false)}
+                style={{ width: '100%' }}
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Notification Toast */}
       {notification && notification.show && (
         <div className={`notification notification-${notification.type}`}>
@@ -751,6 +1212,97 @@ function App() {
           </span>
           <span className="notification-message">{notification.message}</span>
         </div>
+      )}
+
+      {/* File Manager Panel */}
+      {showFileManager && showControls && (
+        <div className="file-manager-panel">
+          <div className="file-manager-header">
+            <h3>📁 Loaded Files</h3>
+            <button 
+              className="file-manager-toggle"
+              onClick={() => setShowFileManager(false)}
+              title="Hide file manager"
+            >
+              ‹
+            </button>
+          </div>
+          <div className="file-manager-content">
+            {loadedFiles.length === 0 ? (
+              <div className="file-manager-empty">
+                <p>No files loaded</p>
+                <p className="file-manager-hint">Add .txt or .md files to the 'scripts/' directory</p>
+                <button 
+                  className="file-manager-refresh-btn-empty"
+                  onClick={loadScriptsFromDirectory}
+                >
+                  🔄 Load Scripts
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="file-manager-actions">
+                  <button 
+                    className="file-manager-refresh-btn"
+                    onClick={loadScriptsFromDirectory}
+                    title="Refresh scripts from directory"
+                  >
+                    🔄 Refresh
+                  </button>
+                  <button 
+                    className="file-manager-clear-btn"
+                    onClick={clearAllFiles}
+                    title="Clear all files"
+                  >
+                    Clear All
+                  </button>
+                  <span className="file-count">{loadedFiles.length} file{loadedFiles.length !== 1 ? 's' : ''}</span>
+                </div>
+                <div className="file-list">
+                  {loadedFiles.map((file) => (
+                    <div 
+                      key={file.id}
+                      className={`file-item ${currentFileId === file.id ? 'active' : ''}`}
+                      onClick={() => switchToFile(file.id)}
+                    >
+                      <div className="file-info">
+                        <div className="file-name" title={file.name}>
+                          {currentFileId === file.id && <span className="file-active-indicator">●</span>}
+                          {file.name}
+                          <span className="file-watching-indicator" title="Watching for changes">👁️</span>
+                        </div>
+                        <div className="file-date">
+                          {new Date(file.loadedAt).toLocaleTimeString()}
+                        </div>
+                      </div>
+                      <button
+                        className="file-remove-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          removeFile(file.id);
+                        }}
+                        title="Remove file"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* File Manager Toggle Button (when hidden) */}
+      {!showFileManager && showControls && (
+        <button 
+          className="file-manager-show-btn"
+          onClick={() => setShowFileManager(true)}
+          title="Show file manager"
+        >
+          📁 ›
+        </button>
       )}
 
       {/* Keyboard Shortcuts Help Panel */}
@@ -803,6 +1355,14 @@ function App() {
                 <div className="shortcut-item">
                   <kbd>Ctrl</kbd> + <kbd>I</kbd>
                   <span>Toggle click-through (when enabled)</span>
+                </div>
+              </div>
+
+              <div className="shortcuts-section">
+                <h3>File Manager</h3>
+                <div className="shortcut-item">
+                  <kbd>Ctrl</kbd> + <kbd>F</kbd>
+                  <span>Toggle file manager panel</span>
                 </div>
               </div>
 
@@ -868,13 +1428,74 @@ function App() {
           </div>
           <div className="control-section">
             <h3>Text</h3>
-            <button onClick={handleImportFile}>Import File</button>
-            <textarea
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              placeholder="Paste your text here or import a file..."
-              rows={5}
-            />
+            <div style={{ display: "flex", gap: "8px", marginBottom: "8px" }}>
+              <button onClick={createNewFile}>New File</button>
+              <button onClick={handleImportFile}>Import File</button>
+              <button onClick={saveScript}>Save Script</button>
+            </div>
+            <div style={{ position: "relative" }}>
+              <button 
+                onClick={() => setTextareaMaximized(true)}
+                title="Maximize editor"
+                style={{
+                  position: "absolute",
+                  top: "8px",
+                  right: "8px",
+                  zIndex: 10,
+                  background: "rgba(0, 0, 0, 0.6)",
+                  border: "1px solid rgba(97, 218, 251, 0.4)",
+                  color: "#61dafb",
+                  width: "28px",
+                  height: "28px",
+                  borderRadius: "4px",
+                  cursor: "pointer",
+                  fontSize: "16px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: 0,
+                  transition: "all 0.2s"
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = "rgba(97, 218, 251, 0.2)";
+                  e.currentTarget.style.borderColor = "#61dafb";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = "rgba(0, 0, 0, 0.6)";
+                  e.currentTarget.style.borderColor = "rgba(97, 218, 251, 0.4)";
+                }}
+              >
+                ⛶
+              </button>
+              <textarea
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                placeholder="Paste your script here, import a file, or create a new one..."
+                rows={5}
+                style={{
+                  width: "100%",
+                  padding: "12px",
+                  fontSize: "14px",
+                  lineHeight: "1.6",
+                  backgroundColor: "rgba(0, 0, 0, 0.3)",
+                  border: "1px solid rgba(97, 218, 251, 0.3)",
+                  borderRadius: "6px",
+                  color: "#e0e0e0",
+                  resize: "vertical",
+                  fontFamily: "'Consolas', 'Monaco', 'Courier New', monospace"
+                }}
+              />
+              <div style={{
+                fontSize: "11px",
+                color: "rgba(97, 218, 251, 0.6)",
+                marginTop: "4px",
+                display: "flex",
+                justifyContent: "space-between"
+              }}>
+                <span>{text.length} characters</span>
+                <span>{text.split(/\n/).length} lines</span>
+              </div>
+            </div>
           </div>
 
           <div className="control-section">
@@ -1088,72 +1709,7 @@ function App() {
             <button onClick={() => setShowShortcuts(true)}>⌨️ Keyboard Shortcuts</button>
           </div>
 
-          <div className="control-section">
-            <h3>Profiles</h3>
-            <div>
-              <label htmlFor="profile-select">Profile:</label>
-              <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-                <select
-                  id="profile-select"
-                  value={currentProfile}
-                  onChange={e => setCurrentProfile(e.target.value)}
-                  style={{ minWidth: "140px" }}
-                >
-                  <option value="">Select profile</option>
-                  {profiles.map((profile) => (
-                    <option key={profile.name} value={profile.name}>{profile.name}</option>
-                  ))}
-                </select>
-                <button onClick={saveProfile}>Save Profile</button>
-                <button onClick={() => loadProfile(currentProfile)} disabled={!currentProfile}>Load Profile</button>
-              </div>
-            </div>
-          </div>
 
-          <div className="control-section">
-            <h3>Profile Management</h3>
-            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-              <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-                <button 
-                  onClick={updateProfile} 
-                  disabled={!currentProfile}
-                  style={{ 
-                    background: currentProfile ? "#61dafb" : "#666",
-                    color: "white",
-                    border: "none",
-                    padding: "8px 16px",
-                    borderRadius: "4px",
-                    cursor: currentProfile ? "pointer" : "not-allowed"
-                  }}
-                >
-                  Update Selected Profile
-                </button>
-                <button 
-                  onClick={deleteProfile} 
-                  disabled={!currentProfile}
-                  style={{ 
-                    background: currentProfile ? "#ff6b6b" : "#666",
-                    color: "white",
-                    border: "none",
-                    padding: "8px 16px",
-                    borderRadius: "4px",
-                    cursor: currentProfile ? "pointer" : "not-allowed"
-                  }}
-                >
-                  Delete Selected Profile
-                </button>
-              </div>
-              {currentProfile && (
-                <div style={{ fontSize: "12px", color: "#61dafb", marginTop: "5px" }}>
-                  Selected: <strong>{currentProfile}</strong>
-                </div>
-              )}
-              <div style={{ fontSize: "11px", color: "#888", marginTop: "5px" }}>
-                • Update: Saves current settings and text to the selected profile<br/>
-                • Delete: Permanently removes the selected profile (requires confirmation)
-              </div>
-            </div>
-          </div>
         </div>
       )}
 

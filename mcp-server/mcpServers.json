@@ -1,0 +1,15 @@
+{
+  "teleprompter": {
+    "command": "docker",
+    "args": [
+      "run",
+      "--rm",
+      "-i",
+      "-v",
+      "d:/App_Dev/teleprompter:/workspace",
+      "-e",
+      "MCP_WORKSPACE_ROOT=/workspace",
+      "teleprompter-mcp:latest"
+    ]
+  }
+}

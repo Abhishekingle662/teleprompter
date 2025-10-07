@@ -1,0 +1,25 @@
+TEST FILE 2
+===========
+
+Welcome to the second test file!
+
+Date: October 07, 2025
+File Number: 2 of 2
+
+This file contains different content from Test File 1 to help verify that multiple files can be created and managed independently.
+
+Sample Content:
+• Bullet point one
+• Bullet point two  
+• Bullet point three
+
+Additional Notes:
+This is a companion file to test-1.txt. Both files should exist in the workspace and can be accessed separately.
+
+Random test data: The quick brown fox jumps over the lazy dog.
+
+---
+
+Test File 2 creation complete ✓
+
+End of Test File 2
