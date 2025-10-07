@@ -1,51 +1,142 @@
-You have two main deployment models for the MCP server that keep it in production sync with the Windows Tauri app. Pick whichever fits how your users will run the teleprompter.
 
-1. Local companion process (recommended if the teleprompter runs on the user’s own machine)
-Bundle the server
+# 🧭 MCP Server Deployment Guide
 
-Keep the TypeScript MCP project as-is. During packaging, distribute the compiled dist/index.js plus its package.json dependencies, or package it into a single executable (e.g., with pkg or nexe).
-Alternatively, ship the Docker image you already build (teleprompter-mcp) and install Docker Desktop as a prerequisite.
-Launch it from Tauri
+This document outlines the **two main deployment models** for running the **MCP server** in production sync with the **Windows Tauri Teleprompter app**.
+Choose the model that best fits how your users will run the teleprompter.
 
-Add a small Tauri command that spawns the MCP process (either node dist/index.js or docker run …). Ensure MCP_WORKSPACE_ROOT points to the same directory where the app stores scripts (e.g., the user’s documents folder).
-On app shutdown, send a signal to stop the process.
-Client integration
+---
 
-Since the MCP server uses stdio, the teleprompter or a co-running MCP client (Claude Desktop / ChatGPT) executes the command. No network exposure is required.
-Pros: no external infrastructure; users work offline; simplest security profile.
-Cons: every Windows machine needs Node/Docker runtime (you can hide this by packaging an exe).
+## 🚀 1. Local Companion Process *(Recommended)*
 
-2. Remote MCP service (if you need centralized updates)
-Switch to HTTP transport (optional but typical for remote deployments): use StreamableHttpServerTransport from the MCP SDK, listen on an HTTPS port, and authenticate requests (e.g., bearer token). Update the teleprompter to pull scripts via HTTPS instead of the file watcher, or add a backend component that writes to the shared file location.
+Ideal when the teleprompter runs directly on the user’s machine.
 
-Deploy the Docker image
+### 🧩 Bundle the Server
 
-Push to a private registry.
-Run it on a small VM or container platform (e.g., Azure Container Apps, ECS, GKE). Mount persistent storage for the script file, or have the server write to an object store / database.
-Expose the HTTPS endpoint behind a reverse proxy (nginx, Traefik) with TLS.
-Configure clients
+* Keep the TypeScript MCP project as-is.
+* During packaging, distribute:
 
-Provide the MCP URL plus credentials to users (Claude/ChatGPT accept remote MCP endpoints).
-The teleprompter needs a sync mechanism—either polling the remote API, subscribing to events, or receiving notifications that trigger the watcher to refresh from the network.
-Pros: centralized content management, works across devices.
-Cons: you must secure the API, add authentication, host infrastructure, and adapt the teleprompter to receive remote updates.
+  * The compiled `dist/index.js` and its `package.json` dependencies, **or**
+  * A single executable using **pkg** or **nexe**.
+* Alternatively, ship the prebuilt Docker image `teleprompter-mcp`, requiring **Docker Desktop** as a prerequisite.
 
-Practical steps you can tackle now
-Finalize the local workflow
+### ⚙️ Launch from Tauri
 
-Rebuild/push the Docker image after the recent code changes:
+1. Add a small **Tauri command** to spawn the MCP process:
+
+   * `node dist/index.js`, or
+   * `docker run …` (your existing command)
+2. Set the environment variable `MCP_WORKSPACE_ROOT` to the same directory used for storing scripts (e.g., the user’s documents folder).
+3. On app shutdown, send a termination signal to stop the process cleanly.
+
+### 🔌 Client Integration
+
+* The MCP server uses **stdio**, allowing the teleprompter or a co-running client (e.g., **Claude Desktop** or **ChatGPT**) to execute it directly.
+* No network exposure is required.
+
+#### ✅ Pros
+
+* No external infrastructure.
+* Works fully offline.
+* Simplest security profile.
+
+#### ⚠️ Cons
+
+* Requires Node.js or Docker runtime on each Windows machine.
+  *(You can package an `.exe` to hide this dependency.)*
+
+---
+
+## ☁️ 2. Remote MCP Service
+
+Choose this option if you need **centralized updates** or multi-device access.
+
+### 🌐 Switch to HTTP Transport
+
+* Use `StreamableHttpServerTransport` from the MCP SDK.
+* Listen on an **HTTPS** port and **authenticate** requests (e.g., bearer tokens).
+* Update the teleprompter to:
+
+  * Pull scripts via HTTPS instead of file watching, or
+  * Integrate a backend that writes to the shared file location.
+
+### 🐳 Deploy the Docker Image
+
+1. Push your image to a private registry.
+2. Run on a small VM or container platform (Azure Container Apps, ECS, or GKE).
+3. Mount persistent storage for script files, or connect to an object store/database.
+4. Expose the HTTPS endpoint behind **nginx** or **Traefik**, with proper **TLS**.
+
+### 🧾 Configure Clients
+
+* Provide users with the **MCP URL** and authentication credentials.
+* Update the teleprompter to:
+
+  * Poll the remote API,
+  * Subscribe to server events, or
+  * Receive notifications that trigger the local file watcher to refresh.
+
+#### ✅ Pros
+
+* Centralized content management.
+* Works across multiple devices.
+
+#### ⚠️ Cons
+
+* Requires infrastructure hosting and security setup.
+* Must add authentication.
+* The teleprompter must handle remote updates.
+
+---
+
+## 🔧 Practical Next Steps
+
+### 1. Finalize the Local Workflow
+
+Rebuild and push the Docker image after code changes:
+
+```bash
 docker build -t teleprompter-mcp:latest -f mcp-server/Dockerfile mcp-server
-Push it to a registry if you want to share it.
-Document the command for Windows users (your current docker run --rm -i -v … -e MCP_WORKSPACE_ROOT … line), or embed it into the teleprompter’s startup.
-Automate MCP startup
+```
 
-Add a Tauri command that runs the container (or Node script) in the background. Use tauri::async_runtime::spawn and capture stdout/stderr for logs.
-Store the chosen script path in settings (scripts/current.txt by default) so the MCP server and app always agree.
-Production build of the teleprompter
+If you plan to share it:
 
-Run npm run tauri build to produce the Windows installer. Include instructions in your README explaining that MCP-capable clients can point to the packaged command to automate script writing.
-Optional: plan for remote hosting
+```bash
+docker push <your-registry>/teleprompter-mcp:latest
+```
 
-If you ultimately need multi-device access, budget for converting the MCP server to an HTTPS service with authentication and updating the teleprompter to fetch remote content rather than relying solely on file watching.
-By default, it’s easiest to keep everything local: ship the MCP server alongside the teleprompter, start it when the app runs, and let Claude/ChatGPT integrations target that command. If requirements push you to the cloud, swap in the HTTP transport and treat it like any other web service, keeping security (TLS, auth) in mind.
+Document the run command for Windows users (your `docker run --rm -i -v …` line), or embed it in the teleprompter’s startup.
+
+---
+
+### 2. Automate MCP Startup
+
+* Add a **Tauri command** to run the MCP (Node or Docker) in the background using:
+
+  ```rust
+  tauri::async_runtime::spawn(...)
+  ```
+* Capture `stdout`/`stderr` for logs.
+* Store the chosen script path in settings (default: `scripts/current.txt`) to keep the app and MCP server in sync.
+
+---
+
+### 3. Build for Production
+
+Run:
+
+```bash
+npm run tauri build
+```
+
+Then, update your README to explain how **MCP-capable clients** can use the packaged command to automate script writing.
+
+---
+
+### 4. Optional: Plan for Remote Hosting
+
+If multi-device access is needed:
+
+* Convert the MCP server to an HTTPS service.
+* Add authentication and TLS.
+* Update the teleprompter to fetch scripts via HTTPS instead of local files.
 
