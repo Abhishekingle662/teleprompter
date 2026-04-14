@@ -9,30 +9,22 @@ import { register, unregisterAll } from "@tauri-apps/plugin-global-shortcut";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import "./App.css";
 
-interface Settings {
-  font_family: string;
-  font_size: number;
-  wpm: number;
-  opacity: number;
-  blur: number;
-  margin_top: number;
-  margin_bottom: number;
-  margin_left: number;
-  margin_right: number;
-  mirror: boolean;
-  focus_band_enabled: boolean;
-  focus_band_position: number;
-  focus_band_height: number;
-  text_color: string;
-}
+import { ControlPanel } from "./components/ControlPanel";
+import { TextDisplay } from "./components/TextDisplay";
+import { FileManager, FileManagerToggle } from "./components/FileManager";
+import {
+  NotificationToast,
+  ConfirmDialogModal,
+  InputDialogModal,
+  NewFileDialogModal,
+  MaximizedEditor,
+  ShortcutsPanel,
+} from "./components/Dialogs";
+import type { Settings, LoadedFile, Notification, ConfirmDialog, InputDialog, NewFileDialog } from "./types";
+import { DEFAULT_SETTINGS } from "./types";
 
-interface LoadedFile {
-  id: string;
-  name: string;
-  path: string;
-  content: string;
-  loadedAt: Date;
-}
+// Computed once at module load — avoids calling getCurrentWindow() on every render.
+const IS_TAURI = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 const SCRIPT_FILE_PATH = "scripts/current.txt";
 
@@ -40,59 +32,27 @@ function App() {
   const [text, setText] = useState("");
   const [isPlaying, setIsPlaying] = useState(false);
   const [scrollPosition, setScrollPosition] = useState(0);
-  const [settings, setSettings] = useState<Settings>({
-    font_family: "Arial",
-    font_size: 48,
-    wpm: 150,
-    opacity: 1.0,
-    blur: 0,
-    margin_top: 50,
-    margin_bottom: 50,
-    margin_left: 50,
-    margin_right: 50,
-    mirror: false,
-    focus_band_enabled: false,
-    focus_band_position: 50,
-    focus_band_height: 20,
-    text_color: "#ffffff",
-  });
+  const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [showControls, setShowControls] = useState(true);
   const [clickThrough, setClickThrough] = useState(false);
   const [countdown, setCountdown] = useState(0);
   const [isCountingDown, setIsCountingDown] = useState(false);
   const [scrollMode, setScrollMode] = useState<"continuous" | "karaoke">("continuous");
   const [scrollProgress, setScrollProgress] = useState<number>(0);
-  const [confirmDialog, setConfirmDialog] = useState<{
-    show: boolean;
-    title: string;
-    message: string;
-    onConfirm: () => void;
-  } | null>(null);
-  const [notification, setNotification] = useState<{
-    show: boolean;
-    message: string;
-    type: 'success' | 'error' | 'info';
-  } | null>(null);
-  const [inputDialog, setInputDialog] = useState<{
-    show: boolean;
-    title: string;
-    placeholder: string;
-    defaultValue: string;
-    onConfirm: (value: string) => void;
-  } | null>(null);
-  const [newFileDialog, setNewFileDialog] = useState<{
-    show: boolean;
-    filename: string;
-    content: string;
-  } | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialog | null>(null);
+  const [notification, setNotification] = useState<Notification | null>(null);
+  const [inputDialog, setInputDialog] = useState<InputDialog | null>(null);
+  const [newFileDialog, setNewFileDialog] = useState<NewFileDialog | null>(null);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [loadedFiles, setLoadedFiles] = useState<LoadedFile[]>([]);
   const [currentFileId, setCurrentFileId] = useState<string | null>(null);
   const [showFileManager, setShowFileManager] = useState(true);
   const [textareaMaximized, setTextareaMaximized] = useState(false);
+  const [activeWordIndex, setActiveWordIndex] = useState(0);
+  const [skipTaskbar, setSkipTaskbar] = useState(false);
+  const [monitors, setMonitors] = useState<Array<{ index: number; name: string; x: number; y: number; width: number; height: number }>>([]);
   
   const textContainerRef = useRef<HTMLDivElement>(null);
-  const scrollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const store = useRef<Store | null>(null);
   const settingsRef = useRef<Settings>(settings);
   const isPlayingRef = useRef<boolean>(isPlaying);
@@ -100,6 +60,9 @@ function App() {
   const countdownRef = useRef<number>(countdown);
   const lastShortcutTime = useRef<number>(0); // For debouncing
   const clickThroughRef = useRef<boolean>(clickThrough);
+  // Refs for values read inside event listeners to avoid stale closures.
+  const loadedFilesRef = useRef<LoadedFile[]>(loadedFiles);
+  const currentFileIdRef = useRef<string | null>(currentFileId);
 
   // Keep refs in sync
   useEffect(() => {
@@ -123,7 +86,15 @@ function App() {
   }, [clickThrough]);
 
   useEffect(() => {
-    if (!isTauri()) {
+    loadedFilesRef.current = loadedFiles;
+  }, [loadedFiles]);
+
+  useEffect(() => {
+    currentFileIdRef.current = currentFileId;
+  }, [currentFileId]);
+
+  useEffect(() => {
+    if (!IS_TAURI) {
       return;
     }
 
@@ -178,6 +149,38 @@ function App() {
     };
   }, []);
 
+  // Load available monitors on mount for multi-monitor positioning.
+  useEffect(() => {
+    if (!IS_TAURI) return;
+    invoke<Array<{ index: number; name: string; x: number; y: number; width: number; height: number }>>(
+      "list_monitors"
+    )
+      .then(setMonitors)
+      .catch(console.error);
+  }, []);
+
+  const toggleSkipTaskbar = async () => {
+    const next = !skipTaskbar;
+    setSkipTaskbar(next);
+    if (IS_TAURI) await invoke("set_skip_taskbar", { skip: next });
+  };
+
+  const moveToMonitor = async (index: number) => {
+    if (IS_TAURI) await invoke("move_to_monitor", { monitorIndex: index });
+  };
+
+  // Listen for tray play/pause events emitted from the Rust tray menu handler.
+  useEffect(() => {
+    if (!IS_TAURI) return;
+    let unlisten: UnlistenFn | null = null;
+    listen("tray-play-pause", () => {
+      togglePlayPause();
+    }).then((fn) => { unlisten = fn; });
+    return () => { unlisten?.(); };
+  // togglePlayPause is stable (defined below) — safe to omit from deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Helper function to adjust color brightness
   const adjustColorBrightness = (hexColor: string, amount: number): string => {
     // Remove # if present
@@ -197,22 +200,11 @@ function App() {
     return newHex;
   };
 
-  // Check if running in Tauri - use a more reliable method
-  const isTauri = () => {
-    // Check if we're in a browser or Tauri
-    // In Tauri, window.__TAURI_INTERNALS__ exists or we can check if getCurrentWindow works
-    try {
-      // Try to get window instance - this will work in Tauri
-      getCurrentWindow();
-      return true;
-    } catch {
-      return false;
-    }
-  };
+  // IS_TAURI is a module-level constant — no per-render check needed.
 
   // Handle window dragging
   const handleDragStart = async (e: React.MouseEvent) => {
-    if (!isTauri()) return;
+    if (!IS_TAURI) return;
     e.preventDefault();
     try {
       const appWindow = getCurrentWindow();
@@ -224,7 +216,7 @@ function App() {
 
   // Window control handlers
   const handleMinimize = async (e: React.MouseEvent) => {
-    if (!isTauri()) return;
+    if (!IS_TAURI) return;
     e.stopPropagation(); // Prevent drag from triggering
     try {
       const appWindow = getCurrentWindow();
@@ -235,7 +227,7 @@ function App() {
   };
 
   const handleMaximize = async (e: React.MouseEvent) => {
-    if (!isTauri()) return;
+    if (!IS_TAURI) return;
     e.stopPropagation(); // Prevent drag from triggering
     try {
       const appWindow = getCurrentWindow();
@@ -246,7 +238,7 @@ function App() {
   };
 
   const handleClose = async (e: React.MouseEvent) => {
-    if (!isTauri()) return;
+    if (!IS_TAURI) return;
     e.stopPropagation(); // Prevent drag from triggering
     try {
       const appWindow = getCurrentWindow();
@@ -262,7 +254,7 @@ function App() {
       // Wait a bit for Tauri to be ready
       await new Promise(resolve => setTimeout(resolve, 100));
       
-      if (!isTauri()) {
+      if (!IS_TAURI) {
         console.warn("Not running in Tauri environment. Run with 'npm run tauri dev'");
         return;
       }
@@ -277,7 +269,7 @@ function App() {
 
   // Load scripts from the default scripts directory
   const loadScriptsFromDirectory = async () => {
-    if (!isTauri()) return;
+    if (!IS_TAURI) return;
     
     try {
       console.log("Loading scripts from directory...");
@@ -348,7 +340,7 @@ function App() {
 
   // Watch the scripts directory for changes
   useEffect(() => {
-    if (!isTauri()) return;
+    if (!IS_TAURI) return;
 
     let unlisten: UnlistenFn | null = null;
 
@@ -357,14 +349,13 @@ function App() {
         // Start watching the scripts directory
         await invoke("watch_scripts_directory");
         
-        // Listen for directory updates
+        // Listen for directory updates — read loadedFiles/currentFileId from
+        // refs to avoid stale closure bugs when state changes after mount.
         unlisten = await listen<Array<{ name: string; path: string; content: string }>>(
           "scripts-directory-updated",
           (event) => {
             const scripts = event.payload;
-            
-            console.log("Scripts directory updated, reloading files...");
-            
+
             if (scripts.length > 0) {
               const newFiles: LoadedFile[] = scripts.map((script) => ({
                 id: Date.now().toString() + Math.random().toString(36).substring(7),
@@ -373,40 +364,31 @@ function App() {
                 content: script.content,
                 loadedAt: new Date(),
               }));
-              
-              // Preserve the currently active file if it still exists
-              const currentFile = loadedFiles.find(f => f.id === currentFileId);
-              let newCurrentFileId = currentFileId;
-              
+
+              // Use refs so we always see the latest state, not the mount-time snapshot.
+              const currentFile = loadedFilesRef.current.find(
+                (f) => f.id === currentFileIdRef.current
+              );
+              let newCurrentFileId = currentFileIdRef.current;
+
               if (currentFile) {
-                // Find the same file in the new list by path
-                const matchingFile = newFiles.find(f => f.path === currentFile.path);
+                const matchingFile = newFiles.find((f) => f.path === currentFile.path);
                 if (matchingFile) {
                   newCurrentFileId = matchingFile.id;
-                  // Update the text if content changed
                   if (matchingFile.content !== currentFile.content) {
                     setText(matchingFile.content);
                   }
                 } else {
-                  // Current file was deleted, switch to first file
                   newCurrentFileId = newFiles[0]?.id || null;
-                  if (newFiles[0]) {
-                    setText(newFiles[0].content);
-                  }
+                  if (newFiles[0]) setText(newFiles[0].content);
                 }
               }
-              
+
               setLoadedFiles(newFiles);
               setCurrentFileId(newCurrentFileId);
-              
-              setNotification({
-                show: true,
-                message: "Scripts directory updated",
-                type: "info",
-              });
+              setNotification({ show: true, message: "Scripts directory updated", type: "info" });
               setTimeout(() => setNotification(null), 2000);
             } else {
-              // All files were deleted
               setLoadedFiles([]);
               setCurrentFileId(null);
               setText("");
@@ -424,7 +406,7 @@ function App() {
       if (unlisten) {
         unlisten();
       }
-      if (isTauri()) {
+      if (IS_TAURI) {
         invoke("stop_watching_scripts_directory").catch(console.error);
       }
     };
@@ -432,7 +414,7 @@ function App() {
 
   // File watching - listen for file updates from Tauri
   useEffect(() => {
-    if (!isTauri()) return;
+    if (!IS_TAURI) return;
 
     let unlisten: UnlistenFn | null = null;
 
@@ -453,8 +435,8 @@ function App() {
             return updated;
           });
 
-          // If this is the currently active file, update the text
-          if (currentFileId === fileId) {
+          // Use ref to avoid stale closure — currentFileId may have changed since mount.
+          if (currentFileIdRef.current === fileId) {
             setText(content);
             setNotification({
               show: true,
@@ -474,11 +456,11 @@ function App() {
         unlisten();
       }
     };
-  }, [currentFileId]);
+  }, []); // currentFileId read via ref — no re-registration needed on file switch
 
   // Watch/unwatch files as they are added or removed
   useEffect(() => {
-    if (!isTauri()) return;
+    if (!IS_TAURI) return;
 
     const watchFiles = async () => {
       for (const file of loadedFiles) {
@@ -497,7 +479,7 @@ function App() {
 
     // Cleanup: unwatch files when component unmounts
     return () => {
-      if (isTauri()) {
+      if (IS_TAURI) {
         invoke("unwatch_all_files").catch(console.error);
       }
     };
@@ -512,36 +494,41 @@ function App() {
   useEffect(() => {
     let registered = false;
     
+    /** Retry an async operation with exponential backoff. */
+    const withRetry = async <T,>(
+      fn: () => Promise<T>,
+      maxAttempts = 3,
+      baseDelayMs = 100
+    ): Promise<T> => {
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        try {
+          return await fn();
+        } catch (err) {
+          if (attempt === maxAttempts - 1) throw err;
+          await new Promise((r) => setTimeout(r, baseDelayMs * 2 ** attempt));
+        }
+      }
+      throw new Error("withRetry: unreachable");
+    };
+
     const registerShortcuts = async () => {
       // Skip if already registered OR currently registering
       if (shortcutsRegisteredRef.current || isRegisteringRef.current) {
-        console.log("Shortcuts already registered or registration in progress, skipping");
         return;
       }
-      
-      // Mark as registering IMMEDIATELY to prevent concurrent registration attempts
+
       isRegisteringRef.current = true;
       shortcutsRegisteredRef.current = true;
-      
-      // Wait for Tauri to be ready
-      await new Promise(resolve => setTimeout(resolve, 300));
-      
-      if (!isTauri()) {
-        console.warn("Not in Tauri, skipping shortcut registration");
+
+      if (!IS_TAURI) {
         isRegisteringRef.current = false;
         shortcutsRegisteredRef.current = false;
         return;
       }
-      
+
       try {
-        // Unregister ALL shortcuts first to avoid conflicts
-        console.log("Unregistering all existing shortcuts...");
-        await unregisterAll().catch((err) => {
-          console.warn("Failed to unregister all shortcuts:", err);
-        });
-        
-        // Small delay after unregistering
-        await new Promise(resolve => setTimeout(resolve, 100));
+        // Unregister with retry — Tauri may not be fully initialised on first mount
+        await withRetry(() => unregisterAll(), 3, 100);
         
         console.log("Registering global shortcuts...");
         
@@ -596,7 +583,7 @@ function App() {
         // Toggle click-through temporarily for interaction
         await register("CommandOrControl+I", () => {
           const currentClickThrough = clickThroughRef.current;
-          if (currentClickThrough && isTauri()) {
+          if (currentClickThrough && IS_TAURI) {
             console.log("Toggling click-through with Ctrl+I");
             // Toggle the actual click-through state
             invoke("toggle_click_through", {}).then((newState) => {
@@ -631,7 +618,7 @@ function App() {
       // Only unregister if we're in development and doing hot reload
       // In production, keep shortcuts registered for the app lifetime
       const isDev = import.meta.env.DEV;
-      if (!isTauri() || !registered || !isDev) {
+      if (!IS_TAURI || !registered || !isDev) {
         return;
       }
       
@@ -642,45 +629,159 @@ function App() {
     };
   }, []); // Remove settings dependency
 
-  // Scroll animation
+  // Measure average word width using Canvas 2D so WPM is a real unit.
+  // Returns pixels-per-word for the current font family and size.
+  const measureAvgWordWidth = (fontFamily: string, fontSize: number): number => {
+    try {
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return fontSize * 3; // safe fallback
+      ctx.font = `${fontSize}px ${fontFamily}`;
+      // Sample of common English words to get a representative average
+      const sampleWords = ["the", "and", "that", "have", "for", "not", "with", "you", "this", "but", "his", "from", "they", "say", "her", "she", "will", "one", "all", "would"];
+      const totalWidth = sampleWords.reduce((sum, w) => sum + ctx.measureText(w + " ").width, 0);
+      return totalWidth / sampleWords.length;
+    } catch {
+      return fontSize * 3;
+    }
+  };
+
+  // Scroll animation — uses requestAnimationFrame for frame-accurate timing.
+  // pixelsPerSecond is derived from real canvas-measured word width × WPM.
+  const rafRef = useRef<number | null>(null);
+  const lastFrameTimeRef = useRef<number | null>(null);
+
   useEffect(() => {
     if (isPlaying && !isCountingDown) {
+      const avgWordWidth = measureAvgWordWidth(settings.font_family, settings.font_size);
       const wordsPerSecond = settings.wpm / 60;
-      const pixelsPerWord = settings.font_size * 0.7;
-      const pixelsPerSecond = wordsPerSecond * pixelsPerWord;
-      const intervalMs = 16; // ~60fps
-      const pixelsPerInterval = (pixelsPerSecond * intervalMs) / 1000;
+      const pixelsPerSecond = wordsPerSecond * avgWordWidth;
 
-      scrollIntervalRef.current = setInterval(() => {
-        setScrollPosition((prev) => prev + pixelsPerInterval);
-      }, intervalMs);
+      const tick = (timestamp: number) => {
+        if (lastFrameTimeRef.current === null) {
+          lastFrameTimeRef.current = timestamp;
+        }
+        const delta = (timestamp - lastFrameTimeRef.current) / 1000; // seconds
+        lastFrameTimeRef.current = timestamp;
+        setScrollPosition((prev) => prev + pixelsPerSecond * delta);
+        rafRef.current = requestAnimationFrame(tick);
+      };
+
+      lastFrameTimeRef.current = null;
+      rafRef.current = requestAnimationFrame(tick);
     } else {
-      if (scrollIntervalRef.current) {
-        clearInterval(scrollIntervalRef.current);
-        scrollIntervalRef.current = null;
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
       }
+      lastFrameTimeRef.current = null;
     }
 
     return () => {
-      if (scrollIntervalRef.current) {
-        clearInterval(scrollIntervalRef.current);
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
       }
+      lastFrameTimeRef.current = null;
     };
-  }, [isPlaying, isCountingDown, settings.wpm, settings.font_size]);
+  }, [isPlaying, isCountingDown, settings.wpm, settings.font_size, settings.font_family]);
 
-  // Apply scroll position
+  // Apply scroll position (continuous mode only — karaoke scrolls via scrollIntoView)
   useEffect(() => {
+    if (scrollMode !== "continuous") return;
     if (textContainerRef.current) {
       textContainerRef.current.scrollTop = scrollPosition;
-      
-      // Calculate scroll progress
       const element = textContainerRef.current;
       const maxScroll = element.scrollHeight - element.clientHeight;
       if (maxScroll > 0) {
         setScrollProgress((scrollPosition / maxScroll) * 100);
       }
     }
-  }, [scrollPosition]);
+  }, [scrollPosition, scrollMode]);
+
+  // ── Karaoke engine ────────────────────────────────────────────────────────
+  // Advances activeWordIndex at WPM pace using rAF. Scrolls the active word
+  // into the vertical center of the container via scrollIntoView.
+  const karaokeRafRef = useRef<number | null>(null);
+  const karaokeLastTimeRef = useRef<number | null>(null);
+  const karaokeAccumRef = useRef<number>(0); // fractional word accumulator
+
+  useEffect(() => {
+    if (scrollMode !== "karaoke" || !isPlaying || isCountingDown) {
+      if (karaokeRafRef.current !== null) {
+        cancelAnimationFrame(karaokeRafRef.current);
+        karaokeRafRef.current = null;
+      }
+      karaokeLastTimeRef.current = null;
+      karaokeAccumRef.current = 0;
+      return;
+    }
+
+    // Count non-whitespace tokens (words) in the text
+    const words = text.split(/\s+/).filter(Boolean);
+    const totalWords = words.length;
+    if (totalWords === 0) return;
+
+    const wordsPerSecond = settings.wpm / 60;
+
+    const tick = (timestamp: number) => {
+      if (karaokeLastTimeRef.current === null) karaokeLastTimeRef.current = timestamp;
+      const delta = (timestamp - karaokeLastTimeRef.current) / 1000;
+      karaokeLastTimeRef.current = timestamp;
+
+      karaokeAccumRef.current += wordsPerSecond * delta;
+
+      if (karaokeAccumRef.current >= 1) {
+        const advance = Math.floor(karaokeAccumRef.current);
+        karaokeAccumRef.current -= advance;
+
+        setActiveWordIndex((prev) => {
+          const next = prev + advance;
+          if (next >= totalWords) {
+            // Reached end — stop playback
+            setIsPlaying(false);
+            return totalWords - 1;
+          }
+          return next;
+        });
+      }
+
+      karaokeRafRef.current = requestAnimationFrame(tick);
+    };
+
+    karaokeLastTimeRef.current = null;
+    karaokeRafRef.current = requestAnimationFrame(tick);
+
+    return () => {
+      if (karaokeRafRef.current !== null) {
+        cancelAnimationFrame(karaokeRafRef.current);
+        karaokeRafRef.current = null;
+      }
+    };
+  }, [scrollMode, isPlaying, isCountingDown, settings.wpm, text]);
+
+  // Reset karaoke position when text changes or mode switches
+  useEffect(() => {
+    setActiveWordIndex(0);
+    karaokeAccumRef.current = 0;
+  }, [text, scrollMode]);
+
+  // Scroll active word into view in karaoke mode
+  useEffect(() => {
+    if (scrollMode !== "karaoke" || !textContainerRef.current) return;
+    const activeEl = textContainerRef.current.querySelector<HTMLElement>(
+      `[data-word-index="${activeWordIndex}"]`
+    );
+    if (activeEl) {
+      activeEl.scrollIntoView({ behavior: "smooth", block: "center" });
+      // Update progress
+      const container = textContainerRef.current;
+      const maxScroll = container.scrollHeight - container.clientHeight;
+      if (maxScroll > 0) {
+        setScrollProgress((container.scrollTop / maxScroll) * 100);
+      }
+    }
+  }, [activeWordIndex, scrollMode]);
 
   // Countdown timer
   useEffect(() => {
@@ -731,7 +832,7 @@ function App() {
         setSettings(migratedSettings);
         // Save settings without calling updateSettings to avoid recursion
         await saveSettings(migratedSettings);
-        if (isTauri()) {
+        if (IS_TAURI) {
           await invoke("update_settings", { settings: migratedSettings });
         }
       }
@@ -770,10 +871,34 @@ function App() {
     }
   };
 
+  // Auto-save session 500ms after text or scroll position stops changing.
+  // This makes the README claim ("automatically saves") actually true.
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!store.current) return;
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    autoSaveTimerRef.current = setTimeout(() => {
+      saveSession();
+    }, 500);
+    return () => {
+      if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [text, scrollPosition]);
+
+  // Debounce settings saves — sliders fire onChange at 60fps while dragging.
+  const settingsSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const debouncedSaveSettings = (newSettings: Settings) => {
+    if (settingsSaveTimerRef.current) clearTimeout(settingsSaveTimerRef.current);
+    settingsSaveTimerRef.current = setTimeout(() => {
+      saveSettings(newSettings);
+    }, 300);
+  };
+
   const updateSettings = async (newSettings: Settings) => {
     setSettings(newSettings);
-    await saveSettings(newSettings);
-    if (isTauri()) {
+    debouncedSaveSettings(newSettings);
+    if (IS_TAURI) {
       await invoke("update_settings", { settings: newSettings });
     }
   };
@@ -793,7 +918,7 @@ function App() {
   };
 
   const handleImportFile = async () => {
-    if (!isTauri()) {
+    if (!IS_TAURI) {
       alert("File import is only available in the Tauri app. Run with 'npm run tauri dev'");
       return;
     }
@@ -907,7 +1032,7 @@ function App() {
   };
 
   const toggleClickThrough = async () => {
-    if (!isTauri()) {
+    if (!IS_TAURI) {
       alert("Click-through is only available in the Tauri app. Run with 'npm run tauri dev'");
       return;
     }
@@ -1015,373 +1140,52 @@ function App() {
     }
   };
 
-  const textStyle: React.CSSProperties = {
-    fontFamily: settings.font_family,
-    fontSize: `${settings.font_size}px`,
-    filter: settings.blur > 0 ? `blur(${settings.blur}px)` : "none",
-    transform: settings.mirror ? "scaleX(-1)" : "none",
-    paddingTop: `${settings.margin_top}px`,
-    paddingBottom: `${settings.margin_bottom}px`,
-    paddingLeft: `${settings.margin_left}px`,
-    paddingRight: `${settings.margin_right}px`,
-    lineHeight: 1.5,
-    whiteSpace: "pre-wrap",
-    color: settings.text_color,
-  };
-
   return (
     <div className="app">
-      {/* Custom Confirmation Dialog */}
-      {confirmDialog && confirmDialog.show && (
-        <div className="dialog-overlay" onClick={() => setConfirmDialog(null)}>
-          <div className="dialog-box" onClick={(e) => e.stopPropagation()}>
-            <h3 className="dialog-title">{confirmDialog.title}</h3>
-            <p className="dialog-message">{confirmDialog.message}</p>
-            <div className="dialog-buttons">
-              <button 
-                className="dialog-button dialog-button-cancel"
-                onClick={() => setConfirmDialog(null)}
-              >
-                Cancel
-              </button>
-              <button 
-                className="dialog-button dialog-button-confirm"
-                onClick={confirmDialog.onConfirm}
-              >
-                Confirm
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Dialogs & overlays */}
+      <ConfirmDialogModal dialog={confirmDialog} onClose={() => setConfirmDialog(null)} />
+      <InputDialogModal dialog={inputDialog} onClose={() => setInputDialog(null)} />
 
-      {/* Custom Input Dialog */}
-      {inputDialog && inputDialog.show && (
-        <div className="dialog-overlay" onClick={() => setInputDialog(null)}>
-          <div className="dialog-box" onClick={(e) => e.stopPropagation()}>
-            <h3 className="dialog-title">{inputDialog.title}</h3>
-            <input
-              type="text"
-              className="dialog-input"
-              placeholder={inputDialog.placeholder}
-              defaultValue={inputDialog.defaultValue}
-              autoFocus
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  inputDialog.onConfirm(e.currentTarget.value);
-                } else if (e.key === 'Escape') {
-                  setInputDialog(null);
-                }
-              }}
-            />
-            <div className="dialog-buttons">
-              <button 
-                className="dialog-button dialog-button-cancel"
-                onClick={() => setInputDialog(null)}
-              >
-                Cancel
-              </button>
-              <button 
-                className="dialog-button dialog-button-confirm"
-                onClick={(e) => {
-                  const input = (e.currentTarget.parentElement?.previousElementSibling as HTMLInputElement);
-                  if (input) {
-                    inputDialog.onConfirm(input.value);
-                  }
-                }}
-              >
-                Save
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* New File Dialog */}
-      {newFileDialog && newFileDialog.show && (
-        <div className="dialog-overlay" onClick={() => setNewFileDialog(null)}>
-          <div className="dialog-box" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '600px', width: '90%' }}>
-            <h3 className="dialog-title">Create New Script</h3>
-            <input
-              type="text"
-              className="dialog-input"
-              placeholder="Enter filename (e.g., my-script.txt)..."
-              value={newFileDialog.filename}
-              onChange={(e) => setNewFileDialog({ ...newFileDialog, filename: e.target.value })}
-              autoFocus
-              style={{ marginBottom: '10px' }}
-            />
-            <textarea
-              className="dialog-input"
-              placeholder="Write your script here..."
-              value={newFileDialog.content}
-              onChange={(e) => setNewFileDialog({ ...newFileDialog, content: e.target.value })}
-              rows={15}
-              style={{ 
-                resize: 'vertical',
-                minHeight: '200px',
-                fontFamily: 'inherit',
-                fontSize: '14px',
-                lineHeight: '1.5'
-              }}
-            />
-            <div className="dialog-buttons">
-              <button 
-                className="dialog-button dialog-button-cancel"
-                onClick={() => setNewFileDialog(null)}
-              >
-                Cancel
-              </button>
-              <button 
-                className="dialog-button dialog-button-confirm"
-                onClick={handleSaveNewFile}
-              >
-                Save
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Maximized Textarea Modal */}
+      <NewFileDialogModal
+        dialog={newFileDialog}
+        onChange={setNewFileDialog}
+        onClose={() => setNewFileDialog(null)}
+        onSave={handleSaveNewFile}
+      />
       {textareaMaximized && (
-        <div className="dialog-overlay" onClick={() => setTextareaMaximized(false)}>
-          <div 
-            className="dialog-box" 
-            onClick={(e) => e.stopPropagation()} 
-            style={{ 
-              maxWidth: '95vw', 
-              width: '95vw',
-              height: '90vh',
-              maxHeight: '90vh',
-              display: 'flex',
-              flexDirection: 'column'
-            }}
-          >
-            <div style={{ 
-              display: 'flex', 
-              justifyContent: 'space-between', 
-              alignItems: 'center',
-              marginBottom: '15px'
-            }}>
-              <h3 className="dialog-title" style={{ margin: 0 }}>Script Editor</h3>
-              <div style={{ fontSize: '12px', color: 'rgba(97, 218, 251, 0.7)' }}>
-                {text.length} characters • {text.split(/\n/).length} lines
-              </div>
-            </div>
-            <textarea
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              placeholder="Write your script here..."
-              autoFocus
-              style={{ 
-                flex: 1,
-                width: '100%',
-                padding: '16px',
-                fontSize: '16px',
-                lineHeight: '1.8',
-                backgroundColor: 'rgba(0, 0, 0, 0.4)',
-                border: '1px solid rgba(97, 218, 251, 0.3)',
-                borderRadius: '6px',
-                color: '#e0e0e0',
-                resize: 'none',
-                fontFamily: "'Consolas', 'Monaco', 'Courier New', monospace",
-                marginBottom: '15px'
-              }}
-            />
-            <div className="dialog-buttons">
-              <button 
-                className="dialog-button dialog-button-confirm"
-                onClick={() => setTextareaMaximized(false)}
-                style={{ width: '100%' }}
-              >
-                Done
-              </button>
-            </div>
-          </div>
-        </div>
+        <MaximizedEditor
+          text={text}
+          onChange={setText}
+          onClose={() => setTextareaMaximized(false)}
+        />
       )}
+      {showShortcuts && <ShortcutsPanel onClose={() => setShowShortcuts(false)} />}
+      <NotificationToast notification={notification} />
 
-      {/* Notification Toast */}
-      {notification && notification.show && (
-        <div className={`notification notification-${notification.type}`}>
-          <span className="notification-icon">
-            {notification.type === 'success' && '✓'}
-            {notification.type === 'error' && '✕'}
-            {notification.type === 'info' && 'ℹ'}
-          </span>
-          <span className="notification-message">{notification.message}</span>
-        </div>
-      )}
-
-      {/* File Manager Panel */}
+      {/* File manager */}
       {showFileManager && showControls && (
-        <div className="file-manager-panel">
-          <div className="file-manager-header">
-            <h3>📁 Loaded Files</h3>
-            <button 
-              className="file-manager-toggle"
-              onClick={() => setShowFileManager(false)}
-              title="Hide file manager"
-            >
-              ‹
-            </button>
-          </div>
-          <div className="file-manager-content">
-            {loadedFiles.length === 0 ? (
-              <div className="file-manager-empty">
-                <p>No files loaded</p>
-                <p className="file-manager-hint">Add .txt or .md files to the 'scripts/' directory</p>
-                <button 
-                  className="file-manager-refresh-btn-empty"
-                  onClick={loadScriptsFromDirectory}
-                >
-                  🔄 Load Scripts
-                </button>
-              </div>
-            ) : (
-              <>
-                <div className="file-manager-actions">
-                  <button 
-                    className="file-manager-refresh-btn"
-                    onClick={loadScriptsFromDirectory}
-                    title="Refresh scripts from directory"
-                  >
-                    🔄 Refresh
-                  </button>
-                  <button 
-                    className="file-manager-clear-btn"
-                    onClick={clearAllFiles}
-                    title="Clear all files"
-                  >
-                    Clear All
-                  </button>
-                  <span className="file-count">{loadedFiles.length} file{loadedFiles.length !== 1 ? 's' : ''}</span>
-                </div>
-                <div className="file-list">
-                  {loadedFiles.map((file) => (
-                    <div 
-                      key={file.id}
-                      className={`file-item ${currentFileId === file.id ? 'active' : ''}`}
-                      onClick={() => switchToFile(file.id)}
-                    >
-                      <div className="file-info">
-                        <div className="file-name" title={file.name}>
-                          {currentFileId === file.id && <span className="file-active-indicator">●</span>}
-                          {file.name}
-                          <span className="file-watching-indicator" title="Watching for changes">👁️</span>
-                        </div>
-                        <div className="file-date">
-                          {new Date(file.loadedAt).toLocaleTimeString()}
-                        </div>
-                      </div>
-                      <button
-                        className="file-remove-btn"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          removeFile(file.id);
-                        }}
-                        title="Remove file"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
-        </div>
+        <FileManager
+          loadedFiles={loadedFiles}
+          currentFileId={currentFileId}
+          onSwitchFile={switchToFile}
+          onRemoveFile={removeFile}
+          onClearAll={clearAllFiles}
+          onRefresh={loadScriptsFromDirectory}
+          onHide={() => setShowFileManager(false)}
+        />
       )}
-
-      {/* File Manager Toggle Button (when hidden) */}
       {!showFileManager && showControls && (
-        <button 
-          className="file-manager-show-btn"
-          onClick={() => setShowFileManager(true)}
-          title="Show file manager"
-        >
-          📁 ›
-        </button>
+        <FileManagerToggle onShow={() => setShowFileManager(true)} />
       )}
 
-      {/* Keyboard Shortcuts Help Panel */}
-      {showShortcuts && (
-        <div className="shortcuts-overlay" onClick={() => setShowShortcuts(false)}>
-          <div className="shortcuts-panel" onClick={(e) => e.stopPropagation()}>
-            <div className="shortcuts-header">
-              <h2>⌨️ Keyboard Shortcuts</h2>
-              <button className="shortcuts-close" onClick={() => setShowShortcuts(false)}>✕</button>
-            </div>
-            <div className="shortcuts-content">
-              <div className="shortcuts-section">
-                <h3>Playback Controls</h3>
-                <div className="shortcut-item">
-                  <kbd>Ctrl</kbd> + <kbd>Space</kbd>
-                  <span>Play / Pause</span>
-                </div>
-                <div className="shortcut-item">
-                  <kbd>Esc</kbd>
-                  <span>Stop playback or toggle controls</span>
-                </div>
-              </div>
-
-              <div className="shortcuts-section">
-                <h3>Speed Adjustment</h3>
-                <div className="shortcut-item">
-                  <kbd>Ctrl</kbd> + <kbd>↑</kbd>
-                  <span>Increase speed (+10 WPM)</span>
-                </div>
-                <div className="shortcut-item">
-                  <kbd>Ctrl</kbd> + <kbd>↓</kbd>
-                  <span>Decrease speed (-10 WPM)</span>
-                </div>
-              </div>
-
-              <div className="shortcuts-section">
-                <h3>Text Color</h3>
-                <div className="shortcut-item">
-                  <kbd>Ctrl</kbd> + <kbd>[</kbd>
-                  <span>Darken text color</span>
-                </div>
-                <div className="shortcut-item">
-                  <kbd>Ctrl</kbd> + <kbd>]</kbd>
-                  <span>Lighten text color</span>
-                </div>
-              </div>
-
-              <div className="shortcuts-section">
-                <h3>Click-Through Mode</h3>
-                <div className="shortcut-item">
-                  <kbd>Ctrl</kbd> + <kbd>I</kbd>
-                  <span>Toggle click-through (when enabled)</span>
-                </div>
-              </div>
-
-              <div className="shortcuts-section">
-                <h3>File Manager</h3>
-                <div className="shortcut-item">
-                  <kbd>Ctrl</kbd> + <kbd>F</kbd>
-                  <span>Toggle file manager panel</span>
-                </div>
-              </div>
-
-              <div className="shortcuts-note">
-                <strong>Note:</strong> On macOS, use <kbd>Cmd</kbd> instead of <kbd>Ctrl</kbd>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Drag region when controls are hidden */}
+      {/* Drag handle when controls are hidden */}
       {!showControls && (
         <div className="drag-handle" data-tauri-drag-region onMouseDown={handleDragStart}>
           Teleprompter - Press Esc to toggle controls
         </div>
       )}
 
-      {/* Playback status indicator */}
+      {/* Playback status */}
       {!showControls && (isPlaying || isCountingDown) && (
         <div className="status-indicator">
           {isCountingDown ? `Starting in ${countdown}...` : "● Playing"}
@@ -1395,359 +1199,60 @@ function App() {
         </div>
       )}
 
+      {/* Control panel */}
       {showControls && (
-        <div className="controls-panel">
-          <div className="drag-header" data-tauri-drag-region onMouseDown={handleDragStart}>
-            <h2>Teleprompter Controls</h2>
-            <div className="window-controls">
-              <button 
-                className="window-button minimize" 
-                onClick={handleMinimize}
-                onMouseDown={(e) => e.stopPropagation()}
-                title="Minimize"
-              >
-                ─
-              </button>
-              <button 
-                className="window-button maximize" 
-                onClick={handleMaximize}
-                onMouseDown={(e) => e.stopPropagation()}
-                title="Maximize"
-              >
-                ☐
-              </button>
-              <button 
-                className="window-button close" 
-                onClick={handleClose}
-                onMouseDown={(e) => e.stopPropagation()}
-                title="Close"
-              >
-                ✕
-              </button>
-            </div>
-          </div>
-          <div className="control-section">
-            <h3>Text</h3>
-            <div style={{ display: "flex", gap: "8px", marginBottom: "8px" }}>
-              <button onClick={createNewFile}>New File</button>
-              <button onClick={handleImportFile}>Import File</button>
-              <button onClick={saveScript}>Save Script</button>
-            </div>
-            <div style={{ position: "relative" }}>
-              <button 
-                onClick={() => setTextareaMaximized(true)}
-                title="Maximize editor"
-                style={{
-                  position: "absolute",
-                  top: "8px",
-                  right: "8px",
-                  zIndex: 10,
-                  background: "rgba(0, 0, 0, 0.6)",
-                  border: "1px solid rgba(97, 218, 251, 0.4)",
-                  color: "#61dafb",
-                  width: "28px",
-                  height: "28px",
-                  borderRadius: "4px",
-                  cursor: "pointer",
-                  fontSize: "16px",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  padding: 0,
-                  transition: "all 0.2s"
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.background = "rgba(97, 218, 251, 0.2)";
-                  e.currentTarget.style.borderColor = "#61dafb";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = "rgba(0, 0, 0, 0.6)";
-                  e.currentTarget.style.borderColor = "rgba(97, 218, 251, 0.4)";
-                }}
-              >
-                ⛶
-              </button>
-              <textarea
-                value={text}
-                onChange={(e) => setText(e.target.value)}
-                placeholder="Paste your script here, import a file, or create a new one..."
-                rows={5}
-                style={{
-                  width: "100%",
-                  padding: "12px",
-                  fontSize: "14px",
-                  lineHeight: "1.6",
-                  backgroundColor: "rgba(0, 0, 0, 0.3)",
-                  border: "1px solid rgba(97, 218, 251, 0.3)",
-                  borderRadius: "6px",
-                  color: "#e0e0e0",
-                  resize: "vertical",
-                  fontFamily: "'Consolas', 'Monaco', 'Courier New', monospace"
-                }}
-              />
-              <div style={{
-                fontSize: "11px",
-                color: "rgba(97, 218, 251, 0.6)",
-                marginTop: "4px",
-                display: "flex",
-                justifyContent: "space-between"
-              }}>
-                <span>{text.length} characters</span>
-                <span>{text.split(/\n/).length} lines</span>
-              </div>
-            </div>
-          </div>
-
-          <div className="control-section">
-            <h3>Playback</h3>
-            <button onClick={togglePlayPause}>
-              {isPlaying ? "Pause" : "Play"} (Ctrl+Space)
-            </button>
-            <button onClick={() => setScrollPosition(0)}>Reset</button>
-            <label>
-              Countdown (s):
-              <input
-                type="number"
-                value={countdown === 0 ? "" : countdown}
-                onChange={(e) => setCountdown(Math.max(0, Math.min(10, parseInt(e.target.value) || 0)))}
-                placeholder="0"
-                min={0}
-                max={10}
-              />
-            </label>
-            <label>
-              Mode:
-              <select value={scrollMode} onChange={(e) => setScrollMode(e.target.value as any)}>
-                <option value="continuous">Continuous</option>
-                <option value="karaoke">Karaoke</option>
-              </select>
-            </label>
-            <div style={{ fontSize: "11px", color: "#888", marginTop: "5px" }}>
-                • Set a countdown for controlled playback.
-              </div>
-
-          </div>
-
-          <div className="control-section">
-            <h3>Speed</h3>
-            <label>
-              WPM: {settings.wpm}
-              <input
-                type="range"
-                min={10}
-                max={500}
-                value={settings.wpm}
-                onChange={(e) => updateSettings({ ...settings, wpm: parseInt(e.target.value) })}
-              />
-            </label>
-            <div style={{ fontSize: "11px", color: "#888", marginTop: "5px" }}>
-                • Control the playback speed.
-              </div>
-          </div>
-
-          <div className="control-section">
-            <h3>Font</h3>
-            <label>
-              Family:
-              <select
-                value={settings.font_family}
-                onChange={(e) => updateSettings({ ...settings, font_family: e.target.value })}
-              >
-                <option value="Arial">Arial</option>
-                <option value="Times New Roman">Times New Roman</option>
-                <option value="Courier New">Courier New</option>
-                <option value="Georgia">Georgia</option>
-                <option value="Verdana">Verdana</option>
-              </select>
-            </label>
-            <label>
-              Size: {settings.font_size}px
-              <input
-                type="range"
-                min={12}
-                max={200}
-                value={settings.font_size}
-                onChange={(e) => updateSettings({ ...settings, font_size: parseInt(e.target.value) })}
-              />
-            </label>
-          </div>
-
-          <div className="control-section">
-            <h3>Appearance</h3>
-            <label>
-              Text Color:
-              <input
-                type="color"
-                value={settings.text_color}
-                onChange={(e) => updateSettings({ ...settings, text_color: e.target.value })}
-                style={{ width: '100%', height: '40px', cursor: 'pointer' }}
-              />
-            </label>
-            <label>
-              Opacity: {settings.opacity.toFixed(2)}
-              <input
-                type="range"
-                min={0.1}
-                max={1.0}
-                step={0.1}
-                value={settings.opacity}
-                onChange={(e) => updateSettings({ ...settings, opacity: parseFloat(e.target.value) })}
-              />
-            </label>
-            <label>
-              Blur: {settings.blur}px
-              <input
-                type="range"
-                min={0}
-                max={10}
-                value={settings.blur}
-                onChange={(e) => updateSettings({ ...settings, blur: parseInt(e.target.value) })}
-              />
-            </label>
-            <label>
-              <input
-                type="checkbox"
-                checked={settings.mirror}
-                onChange={(e) => updateSettings({ ...settings, mirror: e.target.checked })}
-              />
-              Mirror Text
-            </label>
-          </div>
-
-          <div className="control-section">
-            <h3>Margins</h3>
-            <label>
-              Top: {settings.margin_top}px
-              <input
-                type="range"
-                min={0}
-                max={300}
-                value={settings.margin_top}
-                onChange={(e) => updateSettings({ ...settings, margin_top: parseInt(e.target.value) })}
-              />
-            </label>
-            <label>
-              Bottom: {settings.margin_bottom}px
-              <input
-                type="range"
-                min={0}
-                max={300}
-                value={settings.margin_bottom}
-                onChange={(e) => updateSettings({ ...settings, margin_bottom: parseInt(e.target.value) })}
-              />
-            </label>
-            <label>
-              Left: {settings.margin_left}px
-              <input
-                type="range"
-                min={0}
-                max={300}
-                value={settings.margin_left}
-                onChange={(e) => updateSettings({ ...settings, margin_left: parseInt(e.target.value) })}
-              />
-            </label>
-            <label>
-              Right: {settings.margin_right}px
-              <input
-                type="range"
-                min={0}
-                max={300}
-                value={settings.margin_right}
-                onChange={(e) => updateSettings({ ...settings, margin_right: parseInt(e.target.value) })}
-              />
-            </label>
-            <div style={{ fontSize: "11px", color: "#888", marginTop: "5px" }}>
-                • Adjust the borders of the script.
-              </div>
-          </div>
-
-          <div className="control-section">
-            <h3>Focus Band</h3>
-            <label>
-              <input
-                type="checkbox"
-                checked={settings.focus_band_enabled}
-                onChange={(e) => updateSettings({ ...settings, focus_band_enabled: e.target.checked })}
-              />
-              Enable Focus Band
-            </label>
-            <label>
-              Position: {settings.focus_band_position}%
-              <input
-                type="range"
-                min={0}
-                max={100}
-                value={settings.focus_band_position}
-                onChange={(e) => updateSettings({ ...settings, focus_band_position: parseInt(e.target.value) })}
-              />
-            </label>
-            <label>
-              Height: {settings.focus_band_height}%
-              <input
-                type="range"
-                min={5}
-                max={50}
-                value={settings.focus_band_height}
-                onChange={(e) => updateSettings({ ...settings, focus_band_height: parseInt(e.target.value) })}
-              />
-            </label>
-            <div style={{ fontSize: "11px", color: "#888", marginTop: "5px" }}>
-                • Enables focus mode.
-              </div>
-          </div>
-
-          <div className="control-section">
-            <h3>Window</h3>
-            <button onClick={toggleClickThrough}>
-              {clickThrough ? "Disable" : "Enable"} Click-Through
-            </button>
-            <div style={{ fontSize: "11px", color: "#888", marginTop: "5px" }}>
-                • Interact with background apps while its on top, making it invisible. 
-              </div>
-            <button onClick={() => setShowControls(false)}>Hide Controls</button>
-            <button onClick={saveSession}>Save Session</button>
-            <button onClick={() => setShowShortcuts(true)}>⌨️ Keyboard Shortcuts</button>
-          </div>
-
-
-        </div>
+        <ControlPanel
+          text={text}
+          onTextChange={setText}
+          onNewFile={createNewFile}
+          onImportFile={handleImportFile}
+          onSaveScript={saveScript}
+          onMaximizeEditor={() => setTextareaMaximized(true)}
+          isPlaying={isPlaying}
+          isCountingDown={isCountingDown}
+          countdown={countdown}
+          scrollMode={scrollMode}
+          onTogglePlayPause={togglePlayPause}
+          onReset={() => setScrollPosition(0)}
+          onCountdownChange={setCountdown}
+          onScrollModeChange={setScrollMode}
+          settings={settings}
+          onSettingsChange={updateSettings}
+          clickThrough={clickThrough}
+          skipTaskbar={skipTaskbar}
+          monitors={monitors}
+          onToggleClickThrough={toggleClickThrough}
+          onToggleSkipTaskbar={toggleSkipTaskbar}
+          onMoveToMonitor={moveToMonitor}
+          onHideControls={() => setShowControls(false)}
+          onSaveSession={saveSession}
+          onShowShortcuts={() => setShowShortcuts(true)}
+          onDragStart={handleDragStart}
+          onMinimize={handleMinimize}
+          onMaximize={handleMaximize}
+          onClose={handleClose}
+        />
       )}
 
       {!showControls && (
         <button
           className="show-controls-button"
           onClick={() => setShowControls(true)}
-          style={{
-            position: "absolute",
-            top: "10px",
-            right: "10px",
-            padding: "10px 20px",
-            fontSize: "16px",
-            cursor: "pointer",
-            zIndex: 1000,
-          }}
+          style={{ position: "absolute", top: "10px", right: "10px", padding: "10px 20px", fontSize: "16px", cursor: "pointer", zIndex: 1000 }}
         >
           Show Controls
         </button>
       )}
 
-      {/* Text container */}
-      <div
-        className="text-container"
+      {/* Text display */}
+      <TextDisplay
         ref={textContainerRef}
-        style={{
-          pointerEvents: clickThrough ? "none" : "auto",
-          userSelect: clickThrough ? "none" : "auto",
-        }}
-      >
-        <div className="text-content" style={textStyle}>
-          {text.split("\n").map((line, index) => (
-            <div key={index} className="text-line">
-              {line}
-            </div>
-          ))}
-        </div>
-      </div>
+        text={text}
+        settings={settings}
+        clickThrough={clickThrough}
+        scrollMode={scrollMode}
+        activeWordIndex={activeWordIndex}
+      />
     </div>
   );
 }

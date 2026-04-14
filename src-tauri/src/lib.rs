@@ -1,4 +1,4 @@
-use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -6,10 +6,29 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
-use tauri::{Emitter, Manager, State, Window};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    Emitter, Manager, State, Window,
+};
 
 const DEFAULT_SCRIPT_PATH: &str = "scripts/current.txt";
 const SCRIPTS_DIR: &str = "scripts";
+
+/// Resolves the scripts directory using Tauri's app data dir so it works
+/// correctly in both dev and installed production builds.
+fn resolve_scripts_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to resolve app data dir: {e}"))?;
+    let scripts_path = data_dir.join(SCRIPTS_DIR);
+    if !scripts_path.exists() {
+        fs::create_dir_all(&scripts_path)
+            .map_err(|e| format!("Failed to create scripts dir: {e}"))?;
+    }
+    Ok(scripts_path)
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct ScriptFile {
@@ -75,11 +94,15 @@ struct AppState {
     directory_watcher: Mutex<Option<RecommendedWatcher>>,
 }
 
-fn resolve_script_path(path: &str) -> Result<PathBuf, String> {
+fn resolve_script_path(app: &tauri::AppHandle, path: &str) -> Result<PathBuf, String> {
     let mut candidate = PathBuf::from(path);
     if candidate.is_relative() {
-        let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-        candidate = cwd.join(candidate);
+        // Anchor relative paths to the app data directory, not the process cwd.
+        let data_dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("Failed to resolve app data dir: {e}"))?;
+        candidate = data_dir.join(candidate);
     }
     if let Some(parent) = candidate.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -149,18 +172,26 @@ fn set_window_size(window: Window, width: u32, height: u32) -> Result<(), String
 
 #[tauri::command]
 fn start_script_watcher(
+    app: tauri::AppHandle,
     window: Window,
     state: State<AppState>,
     path: Option<String>,
 ) -> Result<(), String> {
-    let script_path = resolve_script_path(path.as_deref().unwrap_or(DEFAULT_SCRIPT_PATH))?;
+    let script_path = resolve_script_path(&app, path.as_deref().unwrap_or(DEFAULT_SCRIPT_PATH))?;
     let watcher_path = script_path.clone();
     let window_clone = window.clone();
 
     let mut new_watcher = notify::recommended_watcher(
         move |res: Result<Event, notify::Error>| match res {
-            Ok(_) => {
-                emit_script_update(&window_clone, &watcher_path);
+            Ok(event) => {
+                // Only emit on actual data writes — ignore Access, Metadata, etc.
+                match event.kind {
+                    EventKind::Modify(notify::event::ModifyKind::Data(_))
+                    | EventKind::Create(_) => {
+                        emit_script_update(&window_clone, &watcher_path);
+                    }
+                    _ => {}
+                }
             }
             Err(err) => {
                 let payload = serde_json::json!({ "error": err.to_string() });
@@ -232,6 +263,15 @@ fn watch_file(
         let watcher = notify::recommended_watcher(
             move |res: Result<Event, notify::Error>| {
                 if let Ok(event) = res {
+                    // Only react to actual data writes — ignore Access, Metadata, etc.
+                    let is_data_event = matches!(
+                        event.kind,
+                        EventKind::Modify(notify::event::ModifyKind::Data(_))
+                            | EventKind::Create(_)
+                    );
+                    if !is_data_event {
+                        return;
+                    }
                     if let Some(path) = event.paths.first() {
                         // Find which file ID this path corresponds to
                         let watchers = watchers_clone.lock().unwrap();
@@ -244,7 +284,6 @@ fn watch_file(
                                         "content": content,
                                         "path": path.to_string_lossy()
                                     });
-                                    
                                     if let Some(window) = app_clone.get_webview_window("main") {
                                         let _ = window.emit("file-updated", payload);
                                     }
@@ -311,100 +350,54 @@ fn unwatch_all_files(state: State<AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn save_script_to_directory(filename: String, content: String) -> Result<String, String> {
-    // Get the scripts directory path - go up from src-tauri to project root
-    let current_dir = std::env::current_dir().map_err(|e| e.to_string())?;
-    let scripts_path = if current_dir.ends_with("src-tauri") {
-        // In dev mode, go up one level
-        current_dir.parent().unwrap().join(SCRIPTS_DIR)
-    } else {
-        // In production, use current directory
-        current_dir.join(SCRIPTS_DIR)
-    };
-
-    // Create scripts directory if it doesn't exist
-    if !scripts_path.exists() {
-        fs::create_dir_all(&scripts_path).map_err(|e| e.to_string())?;
-    }
+fn save_script_to_directory(
+    app: tauri::AppHandle,
+    filename: String,
+    content: String,
+) -> Result<String, String> {
+    let scripts_path = resolve_scripts_dir(&app)?;
 
     // Ensure filename ends with .txt
-    let filename = if filename.ends_with(".txt") {
+    let filename = if filename.ends_with(".txt") || filename.ends_with(".md") {
         filename
     } else {
         format!("{}.txt", filename)
     };
 
     let file_path = scripts_path.join(&filename);
-    
-    // Write the content to the file
     fs::write(&file_path, content).map_err(|e| e.to_string())?;
-    
     Ok(file_path.to_string_lossy().to_string())
 }
 
 #[tauri::command]
-fn get_scripts_from_directory() -> Result<Vec<ScriptFile>, String> {
-    // Get the scripts directory path - go up from src-tauri to project root
-    let current_dir = std::env::current_dir().map_err(|e| e.to_string())?;
-    let scripts_path = if current_dir.ends_with("src-tauri") {
-        // In dev mode, go up one level
-        current_dir.parent().unwrap().join(SCRIPTS_DIR)
-    } else {
-        // In production, use current directory
-        current_dir.join(SCRIPTS_DIR)
-    };
-    
-    // Create the directory if it doesn't exist
-    if !scripts_path.exists() {
-        fs::create_dir_all(&scripts_path).map_err(|e| e.to_string())?;
-    }
-    
-    
+fn get_scripts_from_directory(app: tauri::AppHandle) -> Result<Vec<ScriptFile>, String> {
+    let scripts_path = resolve_scripts_dir(&app)?;
+
     let mut script_files = Vec::new();
-    
-    // Read all files from the directory
-    let entries = fs::read_dir(&scripts_path).map_err(|e| {
-        e.to_string()
-    })?;
-    
-    for entry in entries {
-        if let Ok(entry) = entry {
-            let path = entry.path();
-            
-            // Only process .txt and .md files
-            if path.is_file() {
-                if let Some(extension) = path.extension() {
-                    if extension == "txt" || extension == "md" {
-                        // Read the file content
-                        match fs::read_to_string(&path) {
-                            Ok(content) => {
-                                if let Some(name) = path.file_name() {
-                                    script_files.push(ScriptFile {
-                                        name: name.to_string_lossy().to_string(),
-                                        path: path.to_string_lossy().to_string(),
-                                        content,
-                                    });
-                                }
-                            }
-                            Err(e) => {
-                                println!("Failed to read file {:?}: {}", path, e);
+
+    for entry in fs::read_dir(&scripts_path).map_err(|e| e.to_string())?.flatten() {
+        let path = entry.path();
+        if path.is_file() {
+            if let Some(ext) = path.extension() {
+                if ext == "txt" || ext == "md" {
+                    match fs::read_to_string(&path) {
+                        Ok(content) => {
+                            if let Some(name) = path.file_name() {
+                                script_files.push(ScriptFile {
+                                    name: name.to_string_lossy().to_string(),
+                                    path: path.to_string_lossy().to_string(),
+                                    content,
+                                });
                             }
                         }
-                    } else {
-                        println!("Skipping non-txt/md file: {:?}", path);
+                        Err(e) => eprintln!("Failed to read {:?}: {}", path, e),
                     }
                 }
-            } else {
-                println!("Not a file: {:?}", path);
             }
         }
     }
-    
-    // Sort by name
+
     script_files.sort_by(|a, b| a.name.cmp(&b.name));
-    
-    println!("Total scripts loaded: {}", script_files.len());
-    
     Ok(script_files)
 }
 
@@ -413,21 +406,7 @@ fn watch_scripts_directory(
     app: tauri::AppHandle,
     state: State<AppState>,
 ) -> Result<(), String> {
-    // Get the scripts directory path - go up from src-tauri to project root
-    let current_dir = std::env::current_dir().map_err(|e| e.to_string())?;
-    let scripts_path = if current_dir.ends_with("src-tauri") {
-        // In dev mode, go up one level
-        current_dir.parent().unwrap().join(SCRIPTS_DIR)
-    } else {
-        // In production, use current directory
-        current_dir.join(SCRIPTS_DIR)
-    };
-    
-    
-    // Create the directory if it doesn't exist
-    if !scripts_path.exists() {
-        fs::create_dir_all(&scripts_path).map_err(|e| e.to_string())?;
-    }
+    let scripts_path = resolve_scripts_dir(&app)?;
 
     let mut dir_watcher = state.directory_watcher.lock().unwrap();
     
@@ -443,12 +422,12 @@ fn watch_scripts_directory(
     let mut watcher = notify::recommended_watcher(
         move |res: Result<Event, notify::Error>| {
             if let Ok(event) = res {
-                use notify::EventKind;
-                
                 println!("Directory event detected: {:?}", event.kind);
                 
                 match event.kind {
-                    EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {
+                    EventKind::Create(_)
+                    | EventKind::Modify(notify::event::ModifyKind::Data(_))
+                    | EventKind::Remove(_) => {
                         println!("Relevant event, checking paths: {:?}", event.paths);
                         // Check if any of the paths are .txt or .md files
                         for path in &event.paths {
@@ -514,6 +493,56 @@ fn stop_watching_scripts_directory(state: State<AppState>) -> Result<(), String>
     Ok(())
 }
 
+/// Toggle whether the window appears in the OS taskbar.
+#[tauri::command]
+fn set_skip_taskbar(app: tauri::AppHandle, skip: bool) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        window.set_skip_taskbar(skip).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Return a list of available monitors with their position, size, and scale factor.
+#[tauri::command]
+fn list_monitors(app: tauri::AppHandle) -> Result<Vec<serde_json::Value>, String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or("main window not found")?;
+    let monitors = window.available_monitors().map_err(|e| e.to_string())?;
+    let result = monitors
+        .into_iter()
+        .enumerate()
+        .map(|(i, m)| {
+            serde_json::json!({
+                "index": i,
+                "name": m.name().unwrap_or_default(),
+                "x": m.position().x,
+                "y": m.position().y,
+                "width": m.size().width,
+                "height": m.size().height,
+                "scale_factor": m.scale_factor(),
+            })
+        })
+        .collect();
+    Ok(result)
+}
+
+/// Move the main window to a specific monitor by index.
+#[tauri::command]
+fn move_to_monitor(app: tauri::AppHandle, monitor_index: usize) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or("main window not found")?;
+    let monitors = window.available_monitors().map_err(|e| e.to_string())?;
+    if let Some(monitor) = monitors.get(monitor_index) {
+        let pos = monitor.position();
+        window
+            .set_position(tauri::PhysicalPosition::new(pos.x, pos.y))
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -546,7 +575,71 @@ pub fn run() {
             get_scripts_from_directory,
             watch_scripts_directory,
             stop_watching_scripts_directory,
+            set_skip_taskbar,
+            list_monitors,
+            move_to_monitor,
         ])
+        .setup(|app| {
+            #[cfg(debug_assertions)]
+            {
+                if let Some(window) = app.get_webview_window("main") {
+                    window.open_devtools();
+                }
+            }
+
+            // System tray with Play/Pause, Show/Hide, and Quit items.
+            let show_hide = MenuItem::with_id(app, "show_hide", "Show / Hide", true, None::<&str>)?;
+            let play_pause = MenuItem::with_id(app, "play_pause", "Play / Pause", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show_hide, &play_pause, &quit])?;
+
+            TrayIconBuilder::new()
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show_hide" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            if window.is_visible().unwrap_or(false) {
+                                let _ = window.hide();
+                            } else {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        }
+                    }
+                    "play_pause" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.emit("tray-play-pause", ());
+                        }
+                    }
+                    "quit" => {
+                        app.exit(0);
+                    }
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    // Left-click toggles window visibility
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle();
+                        if let Some(window) = app.get_webview_window("main") {
+                            if window.is_visible().unwrap_or(false) {
+                                let _ = window.hide();
+                            } else {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        }
+                    }
+                })
+                .build(app)?;
+
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
