@@ -17,13 +17,17 @@ interface ControlPanelProps {
   onImportFile: () => void;
   onSaveScript: () => void;
   onMaximizeEditor: () => void;
+  recentFiles: Array<{ name: string; path: string }>;
+  onOpenRecentFile: (path: string) => void;
   // Playback
   isPlaying: boolean;
   isCountingDown: boolean;
   countdown: number;
   scrollMode: "continuous" | "karaoke";
+  scrollProgress: number;
   onTogglePlayPause: () => void;
   onReset: () => void;
+  onSeek: (pct: number) => void;
   onCountdownChange: (value: number) => void;
   onScrollModeChange: (mode: "continuous" | "karaoke") => void;
   // Settings
@@ -39,6 +43,12 @@ interface ControlPanelProps {
   onHideControls: () => void;
   onSaveSession: () => void;
   onShowShortcuts: () => void;
+  onConfigureHotkeys: () => void;
+  importedFonts: Array<{ name: string; dataUrl: string }>;
+  onImportFont: () => void;
+  cues: Array<{ label: string; lineIndex: number }>;
+  onJumpToCue: (lineIndex: number) => void;
+  wsInfo: { ip: string; port: number } | null;
   // Window chrome
   onDragStart: (e: React.MouseEvent) => void;
   onMinimize: (e: React.MouseEvent) => void;
@@ -48,12 +58,16 @@ interface ControlPanelProps {
 
 export function ControlPanel({
   text, onTextChange, onNewFile, onImportFile, onSaveScript, onMaximizeEditor,
-  isPlaying, countdown, scrollMode,
-  onTogglePlayPause, onReset, onCountdownChange, onScrollModeChange,
+  recentFiles, onOpenRecentFile,
+  isPlaying, countdown, scrollMode, scrollProgress,
+  onTogglePlayPause, onReset, onSeek, onCountdownChange, onScrollModeChange,
   settings, onSettingsChange,
   clickThrough, skipTaskbar, monitors,
   onToggleClickThrough, onToggleSkipTaskbar, onMoveToMonitor,
-  onHideControls, onSaveSession, onShowShortcuts,
+  onHideControls, onSaveSession, onShowShortcuts, onConfigureHotkeys,
+  importedFonts, onImportFont,
+  cues, onJumpToCue,
+  wsInfo,
   onDragStart, onMinimize, onMaximize, onClose,
 }: ControlPanelProps) {
   return (
@@ -91,6 +105,20 @@ export function ControlPanel({
           <button onClick={onImportFile}>Import File</button>
           <button onClick={onSaveScript}>Save Script</button>
         </div>
+        {recentFiles.length > 0 && (
+          <div style={{ marginBottom: "8px" }}>
+            <select
+              defaultValue=""
+              onChange={(e) => { if (e.target.value) { onOpenRecentFile(e.target.value); e.target.value = ""; } }}
+              style={{ width: "100%", padding: "6px 8px", backgroundColor: "rgba(0,0,0,0.3)", border: "1px solid rgba(97,218,251,0.3)", borderRadius: "4px", color: "#e0e0e0", fontSize: "12px" }}
+            >
+              <option value="" disabled>📂 Recent files…</option>
+              {recentFiles.map((f) => (
+                <option key={f.path} value={f.path}>{f.name}</option>
+              ))}
+            </select>
+          </div>
+        )}
         <div style={{ position: "relative" }}>
           <button
             onClick={onMaximizeEditor}
@@ -133,10 +161,20 @@ export function ControlPanel({
       {/* Playback section */}
       <div className="control-section">
         <h3>Playback</h3>
-        <button onClick={onTogglePlayPause}>
-          {isPlaying ? "Pause" : "Play"} (Ctrl+Space)
-        </button>
-        <button onClick={onReset}>Reset</button>
+        <div style={{ display: "flex", gap: "8px" }}>
+          <button onClick={onTogglePlayPause} style={{ flex: 1 }}>
+            {isPlaying ? "⏸ Pause" : "▶ Play"} (Ctrl+Space)
+          </button>
+          <button onClick={onReset} title="Reset to start">↩</button>
+        </div>
+        <label style={{ marginTop: "6px" }}>
+          Position: {Math.round(scrollProgress)}%
+          <input
+            type="range" min={0} max={100} value={Math.round(scrollProgress)}
+            onChange={(e) => onSeek(parseInt(e.target.value))}
+            style={{ accentColor: "#61dafb" }}
+          />
+        </label>
         <label>
           Countdown (s):
           <input
@@ -163,6 +201,39 @@ export function ControlPanel({
         </div>
       </div>
 
+      {/* Cue markers section — only shown when the script contains [CUE:] markers */}
+      {cues.length > 0 && (
+        <div className="control-section">
+          <h3>Cue Markers</h3>
+          <div style={{ display: "flex", flexDirection: "column", gap: "4px", maxHeight: "140px", overflowY: "auto" }}>
+            {cues.map((cue) => (
+              <button
+                key={`${cue.lineIndex}-${cue.label}`}
+                onClick={() => onJumpToCue(cue.lineIndex)}
+                style={{
+                  textAlign: "left",
+                  background: "rgba(250, 204, 21, 0.1)",
+                  border: "1px solid rgba(250, 204, 21, 0.3)",
+                  borderRadius: "5px",
+                  color: "#facc15",
+                  padding: "5px 8px",
+                  fontSize: "12px",
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+              >
+                ▶ {cue.label}
+              </button>
+            ))}
+          </div>
+          <div style={{ fontSize: "11px", color: "#888", marginTop: "4px" }}>
+            Click to jump. Add <code style={{ background: "rgba(255,255,255,0.08)", padding: "1px 4px", borderRadius: "3px" }}>[CUE: Label]</code> to your script.
+          </div>
+        </div>
+      )}
+
       {/* Speed section */}
       <div className="control-section">
         <h3>Speed</h3>
@@ -173,9 +244,18 @@ export function ControlPanel({
             onChange={(e) => onSettingsChange({ ...settings, wpm: parseInt(e.target.value) })}
           />
         </label>
-        <div style={{ fontSize: "11px", color: "#888", marginTop: "5px" }}>
-          • Control the playback speed.
-        </div>
+        {text.trim().length > 0 && (() => {
+          const wordCount = text.trim().split(/\s+/).filter(Boolean).length;
+          const totalSecs = Math.round((wordCount / settings.wpm) * 60);
+          const mins = Math.floor(totalSecs / 60);
+          const secs = totalSecs % 60;
+          return (
+            <div style={{ fontSize: "12px", color: "rgba(97, 218, 251, 0.8)", marginTop: "6px", display: "flex", gap: "12px" }}>
+              <span>📖 {wordCount.toLocaleString()} words</span>
+              <span>⏱ {mins}:{secs.toString().padStart(2, "0")} at {settings.wpm} WPM</span>
+            </div>
+          );
+        })()}
       </div>
 
       {/* Font section */}
@@ -192,8 +272,22 @@ export function ControlPanel({
             <option value="Courier New">Courier New</option>
             <option value="Georgia">Georgia</option>
             <option value="Verdana">Verdana</option>
+            {importedFonts.length > 0 && (
+              <optgroup label="Imported">
+                {importedFonts.map((f) => (
+                  <option key={f.name} value={f.name}>{f.name}</option>
+                ))}
+              </optgroup>
+            )}
           </select>
         </label>
+        <button
+          onClick={onImportFont}
+          style={{ marginTop: "4px", fontSize: "12px", padding: "5px 10px" }}
+          title="Import a .ttf, .otf, .woff, or .woff2 font file"
+        >
+          + Import Font
+        </button>
         <label>
           Size: {settings.font_size}px
           <input
@@ -323,10 +417,34 @@ export function ControlPanel({
             </div>
           </div>
         )}
+        {wsInfo && wsInfo.port !== 0 && (
+          <div style={{ marginTop: "10px" }}>
+            <label style={{ fontSize: "11px", opacity: 0.7, display: "block", marginBottom: "4px" }}>
+              Phone Remote
+            </label>
+            <div style={{
+              background: "rgba(255,255,255,0.08)",
+              borderRadius: "6px",
+              padding: "8px 10px",
+              fontSize: "12px",
+              fontFamily: "monospace",
+              wordBreak: "break-all",
+            }}>
+              ws://{wsInfo.ip}:{wsInfo.port}
+            </div>
+            <div style={{ fontSize: "11px", opacity: 0.55, marginTop: "4px" }}>
+              Connect from your phone's browser or a WebSocket client.
+              Send <code style={{ background: "rgba(255,255,255,0.1)", padding: "1px 4px", borderRadius: "3px" }}>
+                {`{"action":"play"}`}
+              </code> to control playback.
+            </div>
+          </div>
+        )}
         <div style={{ marginTop: "10px", display: "flex", flexDirection: "column", gap: "6px" }}>
           <button onClick={onHideControls}>Hide Controls</button>
           <button onClick={onSaveSession}>Save Session</button>
           <button onClick={onShowShortcuts}>⌨️ Keyboard Shortcuts</button>
+          <button onClick={onConfigureHotkeys}>🎛 Configure Hotkeys</button>
         </div>
       </div>
     </div>

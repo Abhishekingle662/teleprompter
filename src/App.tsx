@@ -19,9 +19,13 @@ import {
   NewFileDialogModal,
   MaximizedEditor,
   ShortcutsPanel,
+  FirstRunOverlay,
 } from "./components/Dialogs";
-import type { Settings, LoadedFile, Notification, ConfirmDialog, InputDialog, NewFileDialog } from "./types";
-import { DEFAULT_SETTINGS } from "./types";
+import { useScrollEngine } from "./hooks/useScrollEngine";
+import { useSettings } from "./hooks/useSettings";
+import { HotkeySettings } from "./components/HotkeySettings";
+import type { LoadedFile, Notification, ConfirmDialog, InputDialog, NewFileDialog, HotkeyMap, Cue } from "./types";
+import { DEFAULT_HOTKEYS, parseCues } from "./types";
 
 // Computed once at module load — avoids calling getCurrentWindow() on every render.
 const IS_TAURI = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -31,14 +35,12 @@ const SCRIPT_FILE_PATH = "scripts/current.txt";
 function App() {
   const [text, setText] = useState("");
   const [isPlaying, setIsPlaying] = useState(false);
-  const [scrollPosition, setScrollPosition] = useState(0);
-  const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
+
   const [showControls, setShowControls] = useState(true);
   const [clickThrough, setClickThrough] = useState(false);
   const [countdown, setCountdown] = useState(0);
   const [isCountingDown, setIsCountingDown] = useState(false);
   const [scrollMode, setScrollMode] = useState<"continuous" | "karaoke">("continuous");
-  const [scrollProgress, setScrollProgress] = useState<number>(0);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialog | null>(null);
   const [notification, setNotification] = useState<Notification | null>(null);
   const [inputDialog, setInputDialog] = useState<InputDialog | null>(null);
@@ -48,13 +50,22 @@ function App() {
   const [currentFileId, setCurrentFileId] = useState<string | null>(null);
   const [showFileManager, setShowFileManager] = useState(true);
   const [textareaMaximized, setTextareaMaximized] = useState(false);
-  const [activeWordIndex, setActiveWordIndex] = useState(0);
+
   const [skipTaskbar, setSkipTaskbar] = useState(false);
   const [monitors, setMonitors] = useState<Array<{ index: number; name: string; x: number; y: number; width: number; height: number }>>([]);
+  const [recentFiles, setRecentFiles] = useState<Array<{ name: string; path: string }>>([]);
+  const [showFirstRun, setShowFirstRun] = useState(false);
+  const [showHotkeySettings, setShowHotkeySettings] = useState(false);
+  const [hotkeys, setHotkeys] = useState<HotkeyMap>(DEFAULT_HOTKEYS);
+  const hotkeysRef = useRef<HotkeyMap>(DEFAULT_HOTKEYS);
+  const [wsInfo, setWsInfo] = useState<{ ip: string; port: number } | null>(null);
+  const [importedFonts, setImportedFonts] = useState<Array<{ name: string; dataUrl: string }>>([]);
+  // Stable ref so the remote-action listener (registered once) can call the
+  // latest updateSettings without a stale closure.
+  const updateSettingsRef = useRef<(s: import("./types").Settings) => void>(() => {});
   
   const textContainerRef = useRef<HTMLDivElement>(null);
   const store = useRef<Store | null>(null);
-  const settingsRef = useRef<Settings>(settings);
   const isPlayingRef = useRef<boolean>(isPlaying);
   const isCountingDownRef = useRef<boolean>(isCountingDown);
   const countdownRef = useRef<number>(countdown);
@@ -65,9 +76,7 @@ function App() {
   const currentFileIdRef = useRef<string | null>(currentFileId);
 
   // Keep refs in sync
-  useEffect(() => {
-    settingsRef.current = settings;
-  }, [settings]);
+
 
   useEffect(() => {
     isPlayingRef.current = isPlaying;
@@ -88,6 +97,10 @@ function App() {
   useEffect(() => {
     loadedFilesRef.current = loadedFiles;
   }, [loadedFiles]);
+
+  useEffect(() => {
+    hotkeysRef.current = hotkeys;
+  }, [hotkeys]);
 
   useEffect(() => {
     currentFileIdRef.current = currentFileId;
@@ -169,6 +182,77 @@ function App() {
     if (IS_TAURI) await invoke("move_to_monitor", { monitorIndex: index });
   };
 
+  const updateHotkeys = async (newHotkeys: HotkeyMap) => {
+    setHotkeys(newHotkeys);
+    hotkeysRef.current = newHotkeys;
+    await store.current?.set("hotkeys", newHotkeys);
+    await store.current?.save();
+    // Re-register shortcuts with new bindings (takes effect on next registration cycle)
+    shortcutsRegisteredRef.current = false;
+  };
+
+  const dismissFirstRun = async () => {
+    setShowFirstRun(false);
+    await store.current?.set("onboardingSeen", true);
+    await store.current?.save();
+  };
+
+  // Open a file from the recent files list.
+  const openRecentFile = async (path: string) => {
+    try {
+      const content = await readTextFile(path);
+      const name = path.split(/[\\/]/).pop() || "Untitled";
+      const existing = loadedFiles.find((f) => f.path === path);
+      if (existing) {
+        setCurrentFileId(existing.id);
+        setText(existing.content);
+        setScrollPosition(0);
+        return;
+      }
+      const newFile: LoadedFile = { id: Date.now().toString(), name, path, content, loadedAt: new Date() };
+      setLoadedFiles((prev) => [...prev, newFile]);
+      setCurrentFileId(newFile.id);
+      setText(content);
+      setScrollPosition(0);
+      setNotification({ show: true, message: `Opened "${name}"`, type: "success" });
+      setTimeout(() => setNotification(null), 2000);
+    } catch {
+      setNotification({ show: true, message: `Could not open file`, type: "error" });
+      setTimeout(() => setNotification(null), 3000);
+    }
+  };
+
+  // Persist a file to the recent files list (max 10, deduped by path).
+  const addToRecentFiles = async (name: string, path: string) => {
+    const entry = { name, path };
+    const updated = [entry, ...recentFiles.filter((f) => f.path !== path)].slice(0, 10);
+    setRecentFiles(updated);
+    await store.current?.set("recentFiles", updated);
+    await store.current?.save();
+  };
+
+  // Seek to a percentage position in the scroll container.
+  const handleSeek = (pct: number) => {
+    const el = textContainerRef.current;
+    if (!el) return;
+    const maxScroll = el.scrollHeight - el.clientHeight;
+    setScrollPosition((pct / 100) * maxScroll);
+  };
+
+  // Cue markers derived from the current script text.
+  const cues: Cue[] = parseCues(text);
+
+  // Scroll the container so the cue line is at the top of the viewport.
+  const jumpToCue = (lineIndex: number) => {
+    const el = textContainerRef.current;
+    if (!el) return;
+    const target = el.querySelector<HTMLElement>(`[data-cue-line="${lineIndex}"]`);
+    if (target) {
+      const offsetTop = target.offsetTop - (el as HTMLElement).offsetTop;
+      setScrollPosition(offsetTop);
+    }
+  };
+
   // Listen for tray play/pause events emitted from the Rust tray menu handler.
   useEffect(() => {
     if (!IS_TAURI) return;
@@ -178,6 +262,49 @@ function App() {
     }).then((fn) => { unlisten = fn; });
     return () => { unlisten?.(); };
   // togglePlayPause is stable (defined below) — safe to omit from deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Start the WebSocket remote-control server and listen for phone actions.
+  useEffect(() => {
+    if (!IS_TAURI) return;
+    let unlisten: UnlistenFn | null = null;
+
+    invoke<{ ip: string; port: number }>("get_ws_info").then((info) => {
+      // Server not yet started — start it, then fetch updated info.
+      if (info.port === 0) {
+        return invoke<number>("start_ws_server").then(() =>
+          invoke<{ ip: string; port: number }>("get_ws_info").then(setWsInfo)
+        );
+      }
+      setWsInfo(info);
+    }).catch(console.error);
+
+    listen<{ action: string }>("remote-action", (event) => {
+      const { action } = event.payload;
+      switch (action) {
+        case "play":
+          if (!isPlayingRef.current && !isCountingDownRef.current) togglePlayPause();
+          break;
+        case "pause":
+          if (isPlayingRef.current) togglePlayPause();
+          break;
+        case "toggle":
+          togglePlayPause();
+          break;
+        case "faster":
+          updateSettingsRef.current({ ...settingsRef.current, wpm: Math.min(600, settingsRef.current.wpm + 10) });
+          break;
+        case "slower":
+          updateSettingsRef.current({ ...settingsRef.current, wpm: Math.max(30, settingsRef.current.wpm - 10) });
+          break;
+        case "reset":
+          if (textContainerRef.current) textContainerRef.current.scrollTop = 0;
+          break;
+      }
+    }).then((fn) => { unlisten = fn; }).catch(console.error);
+
+    return () => { unlisten?.(); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -262,6 +389,17 @@ function App() {
       store.current = await Store.load("settings.json");
       await loadSettings();
       await loadSession();
+      // Load recent files list
+      const savedRecent = await store.current?.get<Array<{ name: string; path: string }>>("recentFiles");
+      if (savedRecent) setRecentFiles(savedRecent);
+      // Show first-run overlay if user has never opened the app before
+      const hasSeenOnboarding = await store.current?.get<boolean>("onboardingSeen");
+      if (!hasSeenOnboarding) setShowFirstRun(true);
+      // Load saved hotkey map
+      const savedHotkeys = await store.current?.get<HotkeyMap>("hotkeys");
+      if (savedHotkeys) { setHotkeys(savedHotkeys); hotkeysRef.current = savedHotkeys; }
+      // Load previously imported fonts and inject @font-face rules
+      await loadImportedFonts();
       await loadScriptsFromDirectory();
     };
     initStore();
@@ -529,10 +667,10 @@ function App() {
       try {
         // Unregister with retry — Tauri may not be fully initialised on first mount
         await withRetry(() => unregisterAll(), 3, 100);
-        
-        console.log("Registering global shortcuts...");
-        
-        await register("CommandOrControl+Space", () => {
+
+        const hk = hotkeysRef.current;
+
+        await register(hk.playPause, () => {
           // Debounce to prevent key auto-repeat (500ms)
           const now = Date.now();
           if (now - lastShortcutTime.current < 500) {
@@ -557,31 +695,25 @@ function App() {
             setIsCountingDown(false);
           }
         });
-        await register("CommandOrControl+Up", () => {
+        await register(hk.speedUp, () => {
           const current = settingsRef.current;
           updateSettings({ ...current, wpm: Math.min(current.wpm + 10, 500) });
         });
-        await register("CommandOrControl+Down", () => {
+        await register(hk.speedDown, () => {
           const current = settingsRef.current;
           updateSettings({ ...current, wpm: Math.max(current.wpm - 10, 10) });
         });
         await register("CommandOrControl+BracketLeft", () => {
-          // Darken text color
           const current = settingsRef.current;
-          const color = current.text_color;
-          const darkerColor = adjustColorBrightness(color, -20);
-          updateSettings({ ...current, text_color: darkerColor });
+          updateSettings({ ...current, text_color: adjustColorBrightness(current.text_color, -20) });
         });
         await register("CommandOrControl+BracketRight", () => {
-          // Lighten text color
           const current = settingsRef.current;
-          const color = current.text_color;
-          const lighterColor = adjustColorBrightness(color, 20);
-          updateSettings({ ...current, text_color: lighterColor });
+          updateSettings({ ...current, text_color: adjustColorBrightness(current.text_color, 20) });
         });
-        
+
         // Toggle click-through temporarily for interaction
-        await register("CommandOrControl+I", () => {
+        await register(hk.toggleClickThrough, () => {
           const currentClickThrough = clickThroughRef.current;
           if (currentClickThrough && IS_TAURI) {
             console.log("Toggling click-through with Ctrl+I");
@@ -595,10 +727,18 @@ function App() {
         });
         
         // Toggle file manager
-        await register("CommandOrControl+F", () => {
+        await register(hk.toggleFileManager, () => {
           setShowFileManager(prev => !prev);
         });
-        
+
+        // Font size hotkeys — adjust while playing without touching the panel
+        await register(hk.fontSizeUp, () => {
+          updateSettings({ ...settingsRef.current, font_size: Math.min(200, settingsRef.current.font_size + 2) });
+        });
+        await register(hk.fontSizeDown, () => {
+          updateSettings({ ...settingsRef.current, font_size: Math.max(12, settingsRef.current.font_size - 2) });
+        });
+
         registered = true;
         console.log("Global shortcuts registered successfully");
       } catch (error) {
@@ -629,159 +769,26 @@ function App() {
     };
   }, []); // Remove settings dependency
 
-  // Measure average word width using Canvas 2D so WPM is a real unit.
-  // Returns pixels-per-word for the current font family and size.
-  const measureAvgWordWidth = (fontFamily: string, fontSize: number): number => {
-    try {
-      const canvas = document.createElement("canvas");
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return fontSize * 3; // safe fallback
-      ctx.font = `${fontSize}px ${fontFamily}`;
-      // Sample of common English words to get a representative average
-      const sampleWords = ["the", "and", "that", "have", "for", "not", "with", "you", "this", "but", "his", "from", "they", "say", "her", "she", "will", "one", "all", "would"];
-      const totalWidth = sampleWords.reduce((sum, w) => sum + ctx.measureText(w + " ").width, 0);
-      return totalWidth / sampleWords.length;
-    } catch {
-      return fontSize * 3;
-    }
-  };
+  // ── Settings (load/save/update) via hook ─────────────────────────────────
+  const { settings, settingsRef, updateSettings, loadSettings } = useSettings(store);
+  // Keep the ref current so closures registered before this point can call it.
+  updateSettingsRef.current = updateSettings;
 
-  // Scroll animation — uses requestAnimationFrame for frame-accurate timing.
-  // pixelsPerSecond is derived from real canvas-measured word width × WPM.
-  const rafRef = useRef<number | null>(null);
-  const lastFrameTimeRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    if (isPlaying && !isCountingDown) {
-      const avgWordWidth = measureAvgWordWidth(settings.font_family, settings.font_size);
-      const wordsPerSecond = settings.wpm / 60;
-      const pixelsPerSecond = wordsPerSecond * avgWordWidth;
-
-      const tick = (timestamp: number) => {
-        if (lastFrameTimeRef.current === null) {
-          lastFrameTimeRef.current = timestamp;
-        }
-        const delta = (timestamp - lastFrameTimeRef.current) / 1000; // seconds
-        lastFrameTimeRef.current = timestamp;
-        setScrollPosition((prev) => prev + pixelsPerSecond * delta);
-        rafRef.current = requestAnimationFrame(tick);
-      };
-
-      lastFrameTimeRef.current = null;
-      rafRef.current = requestAnimationFrame(tick);
-    } else {
-      if (rafRef.current !== null) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-      }
-      lastFrameTimeRef.current = null;
-    }
-
-    return () => {
-      if (rafRef.current !== null) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-      }
-      lastFrameTimeRef.current = null;
-    };
-  }, [isPlaying, isCountingDown, settings.wpm, settings.font_size, settings.font_family]);
-
-  // Apply scroll position (continuous mode only — karaoke scrolls via scrollIntoView)
-  useEffect(() => {
-    if (scrollMode !== "continuous") return;
-    if (textContainerRef.current) {
-      textContainerRef.current.scrollTop = scrollPosition;
-      const element = textContainerRef.current;
-      const maxScroll = element.scrollHeight - element.clientHeight;
-      if (maxScroll > 0) {
-        setScrollProgress((scrollPosition / maxScroll) * 100);
-      }
-    }
-  }, [scrollPosition, scrollMode]);
-
-  // ── Karaoke engine ────────────────────────────────────────────────────────
-  // Advances activeWordIndex at WPM pace using rAF. Scrolls the active word
-  // into the vertical center of the container via scrollIntoView.
-  const karaokeRafRef = useRef<number | null>(null);
-  const karaokeLastTimeRef = useRef<number | null>(null);
-  const karaokeAccumRef = useRef<number>(0); // fractional word accumulator
-
-  useEffect(() => {
-    if (scrollMode !== "karaoke" || !isPlaying || isCountingDown) {
-      if (karaokeRafRef.current !== null) {
-        cancelAnimationFrame(karaokeRafRef.current);
-        karaokeRafRef.current = null;
-      }
-      karaokeLastTimeRef.current = null;
-      karaokeAccumRef.current = 0;
-      return;
-    }
-
-    // Count non-whitespace tokens (words) in the text
-    const words = text.split(/\s+/).filter(Boolean);
-    const totalWords = words.length;
-    if (totalWords === 0) return;
-
-    const wordsPerSecond = settings.wpm / 60;
-
-    const tick = (timestamp: number) => {
-      if (karaokeLastTimeRef.current === null) karaokeLastTimeRef.current = timestamp;
-      const delta = (timestamp - karaokeLastTimeRef.current) / 1000;
-      karaokeLastTimeRef.current = timestamp;
-
-      karaokeAccumRef.current += wordsPerSecond * delta;
-
-      if (karaokeAccumRef.current >= 1) {
-        const advance = Math.floor(karaokeAccumRef.current);
-        karaokeAccumRef.current -= advance;
-
-        setActiveWordIndex((prev) => {
-          const next = prev + advance;
-          if (next >= totalWords) {
-            // Reached end — stop playback
-            setIsPlaying(false);
-            return totalWords - 1;
-          }
-          return next;
-        });
-      }
-
-      karaokeRafRef.current = requestAnimationFrame(tick);
-    };
-
-    karaokeLastTimeRef.current = null;
-    karaokeRafRef.current = requestAnimationFrame(tick);
-
-    return () => {
-      if (karaokeRafRef.current !== null) {
-        cancelAnimationFrame(karaokeRafRef.current);
-        karaokeRafRef.current = null;
-      }
-    };
-  }, [scrollMode, isPlaying, isCountingDown, settings.wpm, text]);
-
-  // Reset karaoke position when text changes or mode switches
-  useEffect(() => {
-    setActiveWordIndex(0);
-    karaokeAccumRef.current = 0;
-  }, [text, scrollMode]);
-
-  // Scroll active word into view in karaoke mode
-  useEffect(() => {
-    if (scrollMode !== "karaoke" || !textContainerRef.current) return;
-    const activeEl = textContainerRef.current.querySelector<HTMLElement>(
-      `[data-word-index="${activeWordIndex}"]`
-    );
-    if (activeEl) {
-      activeEl.scrollIntoView({ behavior: "smooth", block: "center" });
-      // Update progress
-      const container = textContainerRef.current;
-      const maxScroll = container.scrollHeight - container.clientHeight;
-      if (maxScroll > 0) {
-        setScrollProgress((container.scrollTop / maxScroll) * 100);
-      }
-    }
-  }, [activeWordIndex, scrollMode]);
+  // ── Scroll engine (continuous + karaoke) via hook ────────────────────────
+  const {
+    scrollPosition,
+    setScrollPosition,
+    scrollProgress,
+    activeWordIndex,
+  } = useScrollEngine({
+    isPlaying,
+    isCountingDown,
+    settings,
+    scrollMode,
+    text,
+    containerRef: textContainerRef,
+    onPlaybackEnd: () => setIsPlaying(false),
+  });
 
   // Countdown timer
   useEffect(() => {
@@ -820,36 +827,6 @@ function App() {
     };
   }, []); // No dependencies needed since we use refs
 
-  const loadSettings = async () => {
-    try {
-      const savedSettings = await store.current?.get<Settings>("settings");
-      if (savedSettings) {
-        // Ensure text_color field exists for old saved settings
-        const migratedSettings = {
-          ...savedSettings,
-          text_color: savedSettings.text_color || "#ffffff"
-        };
-        setSettings(migratedSettings);
-        // Save settings without calling updateSettings to avoid recursion
-        await saveSettings(migratedSettings);
-        if (IS_TAURI) {
-          await invoke("update_settings", { settings: migratedSettings });
-        }
-      }
-    } catch (error) {
-      console.error("Failed to load settings:", error);
-    }
-  };
-
-  const saveSettings = async (newSettings: Settings) => {
-    try {
-      await store.current?.set("settings", newSettings);
-      await store.current?.save();
-    } catch (error) {
-      console.error("Failed to save settings:", error);
-    }
-  };
-
   const loadSession = async () => {
     try {
       const session = await store.current?.get<{ text: string; position: number }>("session");
@@ -871,37 +848,65 @@ function App() {
     }
   };
 
+  /** Inject a @font-face rule into the document for a loaded font. */
+  const injectFontFace = (name: string, dataUrl: string) => {
+    const styleId = `font-face-${name.replace(/\s+/g, "-")}`;
+    if (document.getElementById(styleId)) return; // already injected
+    const style = document.createElement("style");
+    style.id = styleId;
+    style.textContent = `@font-face { font-family: "${name}"; src: url("${dataUrl}"); }`;
+    document.head.appendChild(style);
+  };
+
+  /** Load all previously imported fonts from the Rust side and inject them. */
+  const loadImportedFonts = async () => {
+    if (!IS_TAURI) return;
+    try {
+      const fonts = await invoke<Array<{ name: string; data_url: string }>>("list_imported_fonts");
+      const mapped = fonts.map((f) => ({ name: f.name, dataUrl: f.data_url }));
+      mapped.forEach((f) => injectFontFace(f.name, f.dataUrl));
+      setImportedFonts(mapped);
+    } catch (e) {
+      console.error("Failed to load imported fonts:", e);
+    }
+  };
+
+  /** Open a file picker, copy the chosen font to app data, inject it. */
+  const handleImportFont = async () => {
+    if (!IS_TAURI) return;
+    try {
+      const selected = await open({
+        title: "Import Font",
+        filters: [{ name: "Font Files", extensions: ["ttf", "otf", "woff", "woff2"] }],
+        multiple: false,
+      });
+      if (!selected || typeof selected !== "string") return;
+      const result = await invoke<{ name: string; data_url: string }>("import_font", { srcPath: selected });
+      injectFontFace(result.name, result.data_url);
+      setImportedFonts((prev) => {
+        if (prev.some((f) => f.name === result.name)) return prev;
+        return [...prev, { name: result.name, dataUrl: result.data_url }].sort((a, b) =>
+          a.name.localeCompare(b.name)
+        );
+      });
+      setNotification({ show: true, message: `Font "${result.name}" imported`, type: "success" });
+      setTimeout(() => setNotification(null), 2000);
+    } catch (e) {
+      console.error("Font import failed:", e);
+      setNotification({ show: true, message: "Font import failed", type: "error" });
+      setTimeout(() => setNotification(null), 3000);
+    }
+  };
+
   // Auto-save session 500ms after text or scroll position stops changing.
-  // This makes the README claim ("automatically saves") actually true.
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (!store.current) return;
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
-    autoSaveTimerRef.current = setTimeout(() => {
-      saveSession();
-    }, 500);
-    return () => {
-      if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
-    };
+    autoSaveTimerRef.current = setTimeout(() => { saveSession(); }, 500);
+    return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [text, scrollPosition]);
-
-  // Debounce settings saves — sliders fire onChange at 60fps while dragging.
-  const settingsSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const debouncedSaveSettings = (newSettings: Settings) => {
-    if (settingsSaveTimerRef.current) clearTimeout(settingsSaveTimerRef.current);
-    settingsSaveTimerRef.current = setTimeout(() => {
-      saveSettings(newSettings);
-    }, 300);
-  };
-
-  const updateSettings = async (newSettings: Settings) => {
-    setSettings(newSettings);
-    debouncedSaveSettings(newSettings);
-    if (IS_TAURI) {
-      await invoke("update_settings", { settings: newSettings });
-    }
-  };
 
   const togglePlayPause = () => {
     if (!isPlaying && !isCountingDown) {
@@ -961,7 +966,7 @@ function App() {
         setCurrentFileId(newFile.id);
         setText(content);
         setScrollPosition(0);
-        
+        await addToRecentFiles(fileName, selected);
         setNotification({ show: true, message: `File "${fileName}" loaded successfully!`, type: 'success' });
         setTimeout(() => setNotification(null), 3000);
       }
@@ -1143,6 +1148,7 @@ function App() {
   return (
     <div className="app">
       {/* Dialogs & overlays */}
+      {showFirstRun && <FirstRunOverlay onDismiss={dismissFirstRun} />}
       <ConfirmDialogModal dialog={confirmDialog} onClose={() => setConfirmDialog(null)} />
       <InputDialogModal dialog={inputDialog} onClose={() => setInputDialog(null)} />
 
@@ -1160,6 +1166,13 @@ function App() {
         />
       )}
       {showShortcuts && <ShortcutsPanel onClose={() => setShowShortcuts(false)} />}
+      {showHotkeySettings && (
+        <HotkeySettings
+          hotkeys={hotkeys}
+          onChange={updateHotkeys}
+          onClose={() => setShowHotkeySettings(false)}
+        />
+      )}
       <NotificationToast notification={notification} />
 
       {/* File manager */}
@@ -1208,12 +1221,16 @@ function App() {
           onImportFile={handleImportFile}
           onSaveScript={saveScript}
           onMaximizeEditor={() => setTextareaMaximized(true)}
+          recentFiles={recentFiles}
+          onOpenRecentFile={openRecentFile}
           isPlaying={isPlaying}
           isCountingDown={isCountingDown}
           countdown={countdown}
           scrollMode={scrollMode}
+          scrollProgress={scrollProgress}
           onTogglePlayPause={togglePlayPause}
           onReset={() => setScrollPosition(0)}
+          onSeek={handleSeek}
           onCountdownChange={setCountdown}
           onScrollModeChange={setScrollMode}
           settings={settings}
@@ -1227,6 +1244,12 @@ function App() {
           onHideControls={() => setShowControls(false)}
           onSaveSession={saveSession}
           onShowShortcuts={() => setShowShortcuts(true)}
+          onConfigureHotkeys={() => setShowHotkeySettings(true)}
+          importedFonts={importedFonts}
+          onImportFont={handleImportFont}
+          cues={cues}
+          onJumpToCue={jumpToCue}
+          wsInfo={wsInfo}
           onDragStart={handleDragStart}
           onMinimize={handleMinimize}
           onMaximize={handleMaximize}

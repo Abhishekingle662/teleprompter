@@ -9,9 +9,7 @@ export function useSettings(store: React.MutableRefObject<Store | null>) {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const settingsRef = useRef<Settings>(DEFAULT_SETTINGS);
 
-  useEffect(() => {
-    settingsRef.current = settings;
-  }, [settings]);
+  useEffect(() => { settingsRef.current = settings; }, [settings]);
 
   const saveSettings = async (newSettings: Settings) => {
     try {
@@ -31,9 +29,7 @@ export function useSettings(store: React.MutableRefObject<Store | null>) {
   const updateSettings = async (newSettings: Settings) => {
     setSettings(newSettings);
     debouncedSave(newSettings);
-    if (IS_TAURI) {
-      await invoke("update_settings", { settings: newSettings });
-    }
+    if (IS_TAURI) await invoke("update_settings", { settings: newSettings });
   };
 
   const loadSettings = async () => {

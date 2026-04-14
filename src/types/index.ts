@@ -50,6 +50,58 @@ export interface NewFileDialog {
   content: string;
 }
 
+export interface HotkeyMap {
+  playPause: string;
+  speedUp: string;
+  speedDown: string;
+  fontSizeUp: string;
+  fontSizeDown: string;
+  toggleClickThrough: string;
+  toggleFileManager: string;
+}
+
+export const DEFAULT_HOTKEYS: HotkeyMap = {
+  playPause: "CommandOrControl+Space",
+  speedUp: "CommandOrControl+Up",
+  speedDown: "CommandOrControl+Down",
+  fontSizeUp: "CommandOrControl+Equal",
+  fontSizeDown: "CommandOrControl+Minus",
+  toggleClickThrough: "CommandOrControl+I",
+  toggleFileManager: "CommandOrControl+F",
+};
+
+export const HOTKEY_LABELS: Record<keyof HotkeyMap, string> = {
+  playPause: "Play / Pause",
+  speedUp: "Speed Up (+10 WPM)",
+  speedDown: "Speed Down (-10 WPM)",
+  fontSizeUp: "Font Size Up (+2px)",
+  fontSizeDown: "Font Size Down (-2px)",
+  toggleClickThrough: "Toggle Click-Through",
+  toggleFileManager: "Toggle File Manager",
+};
+
+/** A cue marker parsed from `[CUE: Label]` syntax in the script text. */
+export interface Cue {
+  label: string;
+  /** Line index (0-based) in the split-by-newline array. */
+  lineIndex: number;
+}
+
+/**
+ * Parse all `[CUE: Label]` markers from script text.
+ * Returns one entry per matching line, in document order.
+ */
+export function parseCues(text: string): Cue[] {
+  const cues: Cue[] = [];
+  const lines = text.split("\n");
+  const re = /\[CUE:\s*(.+?)\]/i;
+  lines.forEach((line, i) => {
+    const m = re.exec(line);
+    if (m) cues.push({ label: m[1].trim(), lineIndex: i });
+  });
+  return cues;
+}
+
 export const DEFAULT_SETTINGS: Settings = {
   font_family: "Arial",
   font_size: 48,

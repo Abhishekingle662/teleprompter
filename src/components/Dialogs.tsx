@@ -184,6 +184,50 @@ export function MaximizedEditor({ text, onChange, onClose }: MaximizedEditorProp
   );
 }
 
+// ── First-Run Onboarding Overlay ──────────────────────────────────────────────
+
+interface FirstRunOverlayProps {
+  onDismiss: () => void;
+}
+
+export function FirstRunOverlay({ onDismiss }: FirstRunOverlayProps) {
+  return (
+    <div className="dialog-overlay" style={{ zIndex: 3000, backdropFilter: "blur(6px)" }}>
+      <div className="dialog-box" style={{ maxWidth: "520px", width: "90%", textAlign: "center" }}>
+        <div style={{ fontSize: "48px", marginBottom: "12px" }}>📺</div>
+        <h2 style={{ color: "#61dafb", marginBottom: "8px" }}>Welcome to Teleprompter</h2>
+        <p style={{ color: "#aaa", fontSize: "13px", marginBottom: "20px", lineHeight: 1.6 }}>
+          A lightweight, always-on-top teleprompter for your desktop.
+        </p>
+        <div style={{ textAlign: "left", marginBottom: "24px", display: "flex", flexDirection: "column", gap: "10px" }}>
+          {[
+            ["📂", "Import a script", "Click Import File or drag a .txt / .md file"],
+            ["▶", "Start scrolling", "Press Ctrl+Space or click Play"],
+            ["🖱", "Click-through mode", "Enable it to interact with apps behind the overlay"],
+            ["⌨", "Keyboard shortcuts", "Press the ⌨️ button in the Window section to see all hotkeys"],
+            ["🖥", "Move the window", "Drag the header bar to reposition anywhere on screen"],
+          ].map(([icon, title, desc]) => (
+            <div key={title} style={{ display: "flex", gap: "12px", alignItems: "flex-start" }}>
+              <span style={{ fontSize: "20px", minWidth: "28px", textAlign: "center" }}>{icon}</span>
+              <div>
+                <div style={{ color: "#e0e0e0", fontWeight: 600, fontSize: "13px" }}>{title}</div>
+                <div style={{ color: "#888", fontSize: "12px" }}>{desc}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+        <button
+          className="dialog-button dialog-button-confirm"
+          onClick={onDismiss}
+          style={{ width: "100%", fontSize: "15px", padding: "12px" }}
+        >
+          Get Started
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── Keyboard Shortcuts Panel ──────────────────────────────────────────────────
 
 interface ShortcutsPanelProps {
@@ -209,6 +253,7 @@ export function ShortcutsPanel({ onClose }: ShortcutsPanelProps) {
             <div className="shortcut-item"><kbd>Ctrl</kbd> + <kbd>↑</kbd><span>Increase speed (+10 WPM)</span></div>
             <div className="shortcut-item"><kbd>Ctrl</kbd> + <kbd>↓</kbd><span>Decrease speed (-10 WPM)</span></div>
           </div>
+
           <div className="shortcuts-section">
             <h3>Text Color</h3>
             <div className="shortcut-item"><kbd>Ctrl</kbd> + <kbd>[</kbd><span>Darken text color</span></div>

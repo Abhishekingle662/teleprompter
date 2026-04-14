@@ -1,8 +1,8 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { Settings } from "../types";
 
 /** Measures average word width in pixels for the given font using Canvas 2D. */
-function measureAvgWordWidth(fontFamily: string, fontSize: number): number {
+export function measureAvgWordWidth(fontFamily: string, fontSize: number): number {
   try {
     const canvas = document.createElement("canvas");
     const ctx = canvas.getContext("2d");
@@ -24,62 +24,120 @@ interface UseScrollEngineOptions {
   isPlaying: boolean;
   isCountingDown: boolean;
   settings: Settings;
+  scrollMode: "continuous" | "karaoke";
+  text: string;
   containerRef: React.RefObject<HTMLDivElement | null>;
+  onPlaybackEnd?: () => void;
+}
+
+export interface UseScrollEngineResult {
+  scrollPosition: number;
+  setScrollPosition: React.Dispatch<React.SetStateAction<number>>;
+  scrollProgress: number;
+  activeWordIndex: number;
+  setActiveWordIndex: React.Dispatch<React.SetStateAction<number>>;
 }
 
 export function useScrollEngine({
   isPlaying,
   isCountingDown,
   settings,
+  scrollMode,
+  text,
   containerRef,
-}: UseScrollEngineOptions) {
+  onPlaybackEnd,
+}: UseScrollEngineOptions): UseScrollEngineResult {
   const [scrollPosition, setScrollPosition] = useState(0);
   const [scrollProgress, setScrollProgress] = useState(0);
+  const [activeWordIndex, setActiveWordIndex] = useState(0);
 
   const rafRef = useRef<number | null>(null);
   const lastFrameTimeRef = useRef<number | null>(null);
 
-  // rAF-based scroll — frame-accurate, no setInterval drift.
   useEffect(() => {
-    if (isPlaying && !isCountingDown) {
-      const avgWordWidth = measureAvgWordWidth(settings.font_family, settings.font_size);
-      const pixelsPerSecond = (settings.wpm / 60) * avgWordWidth;
-
-      const tick = (timestamp: number) => {
-        if (lastFrameTimeRef.current === null) lastFrameTimeRef.current = timestamp;
-        const delta = (timestamp - lastFrameTimeRef.current) / 1000;
-        lastFrameTimeRef.current = timestamp;
-        setScrollPosition((prev) => prev + pixelsPerSecond * delta);
-        rafRef.current = requestAnimationFrame(tick);
-      };
-
+    if (scrollMode !== "continuous" || !isPlaying || isCountingDown) {
+      if (rafRef.current !== null) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
       lastFrameTimeRef.current = null;
-      rafRef.current = requestAnimationFrame(tick);
-    } else {
-      if (rafRef.current !== null) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-      }
-      lastFrameTimeRef.current = null;
+      return;
     }
-
-    return () => {
-      if (rafRef.current !== null) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-      }
-      lastFrameTimeRef.current = null;
+    const avgWordWidth = measureAvgWordWidth(settings.font_family, settings.font_size);
+    const pixelsPerSecond = (settings.wpm / 60) * avgWordWidth;
+    const tick = (timestamp: number) => {
+      if (lastFrameTimeRef.current === null) lastFrameTimeRef.current = timestamp;
+      const delta = (timestamp - lastFrameTimeRef.current) / 1000;
+      lastFrameTimeRef.current = timestamp;
+      setScrollPosition((prev) => prev + pixelsPerSecond * delta);
+      rafRef.current = requestAnimationFrame(tick);
     };
-  }, [isPlaying, isCountingDown, settings.wpm, settings.font_size, settings.font_family]);
+    lastFrameTimeRef.current = null;
+    rafRef.current = requestAnimationFrame(tick);
+    return () => { if (rafRef.current !== null) { cancelAnimationFrame(rafRef.current); rafRef.current = null; } lastFrameTimeRef.current = null; };
+  }, [scrollMode, isPlaying, isCountingDown, settings.wpm, settings.font_size, settings.font_family]);
 
-  // Apply scroll position to DOM and track progress.
   useEffect(() => {
+    if (scrollMode !== "continuous") return;
     const el = containerRef.current;
     if (!el) return;
     el.scrollTop = scrollPosition;
     const maxScroll = el.scrollHeight - el.clientHeight;
     if (maxScroll > 0) setScrollProgress((scrollPosition / maxScroll) * 100);
-  }, [scrollPosition, containerRef]);
+  }, [scrollPosition, scrollMode, containerRef]);
 
-  return { scrollPosition, setScrollPosition, scrollProgress };
+  const karaokeRafRef = useRef<number | null>(null);
+  const karaokeLastTimeRef = useRef<number | null>(null);
+  const karaokeAccumRef = useRef<number>(0);
+  const onPlaybackEndRef = useRef(onPlaybackEnd);
+  useEffect(() => { onPlaybackEndRef.current = onPlaybackEnd; }, [onPlaybackEnd]);
+
+  useEffect(() => {
+    if (scrollMode !== "karaoke" || !isPlaying || isCountingDown) {
+      if (karaokeRafRef.current !== null) { cancelAnimationFrame(karaokeRafRef.current); karaokeRafRef.current = null; }
+      karaokeLastTimeRef.current = null; karaokeAccumRef.current = 0;
+      return;
+    }
+    const words = text.split(/\s+/).filter(Boolean);
+    const totalWords = words.length;
+    if (totalWords === 0) return;
+    const wordsPerSecond = settings.wpm / 60;
+    const tick = (timestamp: number) => {
+      if (karaokeLastTimeRef.current === null) karaokeLastTimeRef.current = timestamp;
+      const delta = (timestamp - karaokeLastTimeRef.current) / 1000;
+      karaokeLastTimeRef.current = timestamp;
+      karaokeAccumRef.current += wordsPerSecond * delta;
+      if (karaokeAccumRef.current >= 1) {
+        const advance = Math.floor(karaokeAccumRef.current);
+        karaokeAccumRef.current -= advance;
+        setActiveWordIndex((prev) => {
+          const next = prev + advance;
+          if (next >= totalWords) { onPlaybackEndRef.current?.(); return totalWords - 1; }
+          return next;
+        });
+      }
+      karaokeRafRef.current = requestAnimationFrame(tick);
+    };
+    karaokeLastTimeRef.current = null;
+    karaokeRafRef.current = requestAnimationFrame(tick);
+    return () => { if (karaokeRafRef.current !== null) { cancelAnimationFrame(karaokeRafRef.current); karaokeRafRef.current = null; } };
+  }, [scrollMode, isPlaying, isCountingDown, settings.wpm, text]);
+
+  useEffect(() => { setActiveWordIndex(0); karaokeAccumRef.current = 0; }, [text, scrollMode]);
+
+  useEffect(() => {
+    if (scrollMode !== "karaoke" || !containerRef.current) return;
+    const activeEl = containerRef.current.querySelector<HTMLElement>(`[data-word-index="${activeWordIndex}"]`);
+    if (activeEl) {
+      activeEl.scrollIntoView({ behavior: "smooth", block: "center" });
+      const container = containerRef.current;
+      const maxScroll = container.scrollHeight - container.clientHeight;
+      if (maxScroll > 0) setScrollProgress((container.scrollTop / maxScroll) * 100);
+    }
+  }, [activeWordIndex, scrollMode, containerRef]);
+
+  return {
+    scrollPosition,
+    setScrollPosition: useCallback((v: React.SetStateAction<number>) => setScrollPosition(v), []),
+    scrollProgress,
+    activeWordIndex,
+    setActiveWordIndex: useCallback((v: React.SetStateAction<number>) => setActiveWordIndex(v), []),
+  };
 }
