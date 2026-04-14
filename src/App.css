@@ -246,11 +246,14 @@ body {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.8);
+  /* Semi-transparent so the script is visible behind the countdown */
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(2px);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 2000;
+  pointer-events: none;
 }
 
 .countdown-number {
@@ -966,4 +969,23 @@ body {
   background: rgba(97, 218, 251, 0.1);
   padding-right: 12px;
 }
+
+/* ── Cue markers ─────────────────────────────────────────────────────────── */
+.cue-marker {
+  display: block;
+  font-size: 0.55em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #facc15;
+  background: rgba(250, 204, 21, 0.12);
+  border-left: 3px solid #facc15;
+  padding: 4px 12px;
+  margin: 8px 0;
+  border-radius: 0 4px 4px 0;
+  opacity: 0.85;
+  pointer-events: none;
+  user-select: none;
+}
+
 
