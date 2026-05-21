@@ -9,9 +9,11 @@ import { register, unregisterAll } from "@tauri-apps/plugin-global-shortcut";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import "./App.css";
 
-import { ControlPanel } from "./components/ControlPanel";
 import { TextDisplay } from "./components/TextDisplay";
-import { FileManager, FileManagerToggle } from "./components/FileManager";
+import { FileManager } from "./components/FileManager";
+import { TopBar, type UIMode, type UITheme, type UIBackground } from "./components/TopBar";
+import { TransportBar } from "./components/TransportBar";
+import { Inspector } from "./components/Inspector";
 import {
   NotificationToast,
   ConfirmDialogModal,
@@ -36,7 +38,6 @@ function App() {
   const [text, setText] = useState("");
   const [isPlaying, setIsPlaying] = useState(false);
 
-  const [showControls, setShowControls] = useState(true);
   const [clickThrough, setClickThrough] = useState(false);
   const [countdown, setCountdown] = useState(0);
   const [isCountingDown, setIsCountingDown] = useState(false);
@@ -48,8 +49,10 @@ function App() {
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [loadedFiles, setLoadedFiles] = useState<LoadedFile[]>([]);
   const [currentFileId, setCurrentFileId] = useState<string | null>(null);
-  const [showFileManager, setShowFileManager] = useState(true);
   const [textareaMaximized, setTextareaMaximized] = useState(false);
+  const [theme, setTheme] = useState<UITheme>("dark");
+  const [background, setBackground] = useState<UIBackground>("opaque");
+  const [mode, setMode] = useState<UIMode>("edit");
 
   const [skipTaskbar, setSkipTaskbar] = useState(false);
   const [monitors, setMonitors] = useState<Array<{ index: number; name: string; x: number; y: number; width: number; height: number }>>([]);
@@ -194,6 +197,20 @@ function App() {
   const dismissFirstRun = async () => {
     setShowFirstRun(false);
     await store.current?.set("onboardingSeen", true);
+    await store.current?.save();
+  };
+
+  const toggleTheme = async () => {
+    const next: UITheme = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    await store.current?.set("ui.theme", next);
+    await store.current?.save();
+  };
+
+  const toggleBackground = async () => {
+    const next: UIBackground = background === "opaque" ? "transparent" : "opaque";
+    setBackground(next);
+    await store.current?.set("ui.background", next);
     await store.current?.save();
   };
 
@@ -398,6 +415,11 @@ function App() {
       // Load saved hotkey map
       const savedHotkeys = await store.current?.get<HotkeyMap>("hotkeys");
       if (savedHotkeys) { setHotkeys(savedHotkeys); hotkeysRef.current = savedHotkeys; }
+      // Load UI preferences (theme + background + last mode)
+      const savedTheme = await store.current?.get<UITheme>("ui.theme");
+      if (savedTheme === "light" || savedTheme === "dark") setTheme(savedTheme);
+      const savedBg = await store.current?.get<UIBackground>("ui.background");
+      if (savedBg === "opaque" || savedBg === "transparent") setBackground(savedBg);
       // Load previously imported fonts and inject @font-face rules
       await loadImportedFonts();
       await loadScriptsFromDirectory();
@@ -726,9 +748,9 @@ function App() {
           }
         });
         
-        // Toggle file manager
+        // Toggle inspector visibility by cycling Edit ⇄ Live mode.
         await register(hk.toggleFileManager, () => {
-          setShowFileManager(prev => !prev);
+          setMode((m) => (m === "edit" ? "live" : "edit"));
         });
 
         // Font size hotkeys — adjust while playing without touching the panel
@@ -803,29 +825,27 @@ function App() {
     }
   }, [countdown, isCountingDown]);
 
-  // Handle keyboard events for Escape
+  // Escape key:
+  //   - Stops playback if playing or counting down.
+  //   - Otherwise returns to Edit mode from Live/Stealth.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Escape key toggles controls or stops playback
       if (e.key === "Escape") {
         const currentIsPlaying = isPlayingRef.current;
         const currentIsCountingDown = isCountingDownRef.current;
-        
+
         if (currentIsPlaying || currentIsCountingDown) {
           setIsPlaying(false);
           setIsCountingDown(false);
         } else {
-          setShowControls(prev => !prev);
+          setMode((m) => (m === "edit" ? "edit" : "edit"));
         }
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
-
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-    };
-  }, []); // No dependencies needed since we use refs
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
   const loadSession = async () => {
     try {
@@ -1145,13 +1165,23 @@ function App() {
     }
   };
 
+  const currentFileName =
+    loadedFiles.find((f) => f.id === currentFileId)?.name ?? null;
+  const wordCount = text.trim()
+    ? text.trim().split(/\s+/).filter(Boolean).length
+    : 0;
+
   return (
-    <div className="app">
-      {/* Dialogs & overlays */}
+    <div
+      className="app"
+      data-theme={theme}
+      data-bg={background}
+      data-mode={mode}
+    >
+      {/* Overlays */}
       {showFirstRun && <FirstRunOverlay onDismiss={dismissFirstRun} />}
       <ConfirmDialogModal dialog={confirmDialog} onClose={() => setConfirmDialog(null)} />
       <InputDialogModal dialog={inputDialog} onClose={() => setInputDialog(null)} />
-
       <NewFileDialogModal
         dialog={newFileDialog}
         onChange={setNewFileDialog}
@@ -1175,106 +1205,117 @@ function App() {
       )}
       <NotificationToast notification={notification} />
 
-      {/* File manager */}
-      {showFileManager && showControls && (
+      {/* Topbar */}
+      <TopBar
+        mode={mode}
+        onModeChange={setMode}
+        theme={theme}
+        onThemeToggle={toggleTheme}
+        background={background}
+        onBackgroundToggle={toggleBackground}
+        isPlaying={isPlaying}
+        isCountingDown={isCountingDown}
+        currentFileName={currentFileName}
+        onDragStart={handleDragStart}
+        onMinimize={handleMinimize}
+        onMaximize={handleMaximize}
+        onClose={handleClose}
+      />
+
+      {/* Left rail — scripts + editor */}
+      <aside className="rail rail-left">
         <FileManager
           loadedFiles={loadedFiles}
           currentFileId={currentFileId}
+          text={text}
+          onTextChange={setText}
           onSwitchFile={switchToFile}
           onRemoveFile={removeFile}
           onClearAll={clearAllFiles}
           onRefresh={loadScriptsFromDirectory}
-          onHide={() => setShowFileManager(false)}
-        />
-      )}
-      {!showFileManager && showControls && (
-        <FileManagerToggle onShow={() => setShowFileManager(true)} />
-      )}
-
-      {/* Drag handle when controls are hidden */}
-      {!showControls && (
-        <div className="drag-handle" data-tauri-drag-region onMouseDown={handleDragStart}>
-          Teleprompter - Press Esc to toggle controls
-        </div>
-      )}
-
-      {/* Playback status */}
-      {!showControls && (isPlaying || isCountingDown) && (
-        <div className="status-indicator">
-          {isCountingDown ? `Starting in ${countdown}...` : "● Playing"}
-          {isPlaying && ` - ${Math.round(scrollProgress)}%`}
-        </div>
-      )}
-
-      {isCountingDown && (
-        <div className="countdown-overlay">
-          <div className="countdown-number">{countdown}</div>
-        </div>
-      )}
-
-      {/* Control panel */}
-      {showControls && (
-        <ControlPanel
-          text={text}
-          onTextChange={setText}
           onNewFile={createNewFile}
           onImportFile={handleImportFile}
           onSaveScript={saveScript}
           onMaximizeEditor={() => setTextareaMaximized(true)}
           recentFiles={recentFiles}
           onOpenRecentFile={openRecentFile}
-          isPlaying={isPlaying}
-          isCountingDown={isCountingDown}
-          countdown={countdown}
+        />
+        <div className="rail-collapsed">
+          <button
+            className="icon-btn"
+            onClick={() => setMode("edit")}
+            title="Expand scripts panel"
+          >
+            ☰
+          </button>
+        </div>
+      </aside>
+
+      {/* Stage */}
+      <main className="stage">
+        <TextDisplay
+          ref={textContainerRef}
+          text={text}
+          settings={settings}
+          clickThrough={clickThrough}
           scrollMode={scrollMode}
-          scrollProgress={scrollProgress}
-          onTogglePlayPause={togglePlayPause}
-          onReset={() => setScrollPosition(0)}
-          onSeek={handleSeek}
-          onCountdownChange={setCountdown}
-          onScrollModeChange={setScrollMode}
+          activeWordIndex={activeWordIndex}
+        />
+        {isCountingDown && (
+          <div className="countdown-overlay">
+            <div className="countdown-number">{countdown}</div>
+          </div>
+        )}
+        <div className="stealth-escape">Press Esc to exit Stealth</div>
+      </main>
+
+      {/* Right rail — inspector */}
+      <aside className="rail rail-right">
+        <Inspector
           settings={settings}
           onSettingsChange={updateSettings}
+          importedFonts={importedFonts}
+          onImportFont={handleImportFont}
+          countdown={countdown}
+          onCountdownChange={setCountdown}
+          scrollMode={scrollMode}
+          onScrollModeChange={setScrollMode}
+          scrollProgress={scrollProgress}
+          cues={cues}
+          onJumpToCue={jumpToCue}
           clickThrough={clickThrough}
           skipTaskbar={skipTaskbar}
           monitors={monitors}
           onToggleClickThrough={toggleClickThrough}
           onToggleSkipTaskbar={toggleSkipTaskbar}
           onMoveToMonitor={moveToMonitor}
-          onHideControls={() => setShowControls(false)}
           onSaveSession={saveSession}
-          onShowShortcuts={() => setShowShortcuts(true)}
           onConfigureHotkeys={() => setShowHotkeySettings(true)}
-          importedFonts={importedFonts}
-          onImportFont={handleImportFont}
-          cues={cues}
-          onJumpToCue={jumpToCue}
           wsInfo={wsInfo}
-          onDragStart={handleDragStart}
-          onMinimize={handleMinimize}
-          onMaximize={handleMaximize}
-          onClose={handleClose}
+          wordCount={wordCount}
         />
-      )}
+        <div className="rail-collapsed">
+          <button
+            className="icon-btn"
+            onClick={() => setMode("edit")}
+            title="Expand inspector"
+          >
+            ☰
+          </button>
+        </div>
+      </aside>
 
-      {!showControls && (
-        <button
-          className="show-controls-button"
-          onClick={() => setShowControls(true)}
-          style={{ position: "absolute", top: "10px", right: "10px", padding: "10px 20px", fontSize: "16px", cursor: "pointer", zIndex: 1000 }}
-        >
-          Show Controls
-        </button>
-      )}
-
-      {/* Text display */}
-      <TextDisplay
-        ref={textContainerRef}
-        text={text}
-        settings={settings}
-        clickThrough={clickThrough}
-        scrollMode={scrollMode}
-        activeWordIndex={activeWordIndex}
+      {/* Transport */}
+      <TransportBar
+        isPlaying={isPlaying}
+        scrollProgress={scrollProgress}
+        onTogglePlayPause={togglePlayPause}
+        onReset={() => setScrollPosition(0)}
+        onSeek={handleSeek}
+        wpm={settings.wpm}
+        wordCount={wordCount}
+        onShowShortcuts={() => setShowShortcuts(true)}
+        onToggleControls={() => setMode(mode === "edit" ? "live" : "edit")}
       />
     </div>
   );
