@@ -238,32 +238,45 @@ The built application will be in:
    - Any testing you've done
    - Screenshots (if UI changes)
 
+## Manual Smoke Test
+
+Before opening a PR, run through this ~5 minute checklist on your
+platform. CI covers types and lints but not behavior.
+
+1. **Launch** — `npm run tauri dev`. Window opens borderless and
+   transparent with the Inspector visible.
+2. **Load a script** — Import `sample.txt`. Text appears in the
+   display area.
+3. **Play** — Press `Ctrl+Space`. Text scrolls smoothly; the WPM
+   reading matches the slider.
+4. **Hotkey adjust** — `Ctrl+Up` twice. WPM increases by 20.
+5. **Mode switch** — Toggle to karaoke mode. Active word is
+   highlighted and stays centered.
+6. **Click-through** — Enable it, click in the text area, confirm the
+   click reaches the window beneath. Press `Ctrl+I` to toggle off.
+7. **Tray** — Right-click the tray icon, verify Play/Pause and
+   Show/Hide menu items work; left-click toggles window visibility.
+8. **MCP round-trip** (if configured) — From Claude/ChatGPT, call
+   `write_script` with new content. On-screen text refreshes within
+   ~1 s.
+9. **Session restore** — Close the app while playing, reopen, confirm
+   text and scroll position are restored.
+
+If any step fails, note the OS, compositor (Linux), and exact step in
+your PR description.
+
 ## Common Issues
 
-### Build Failures
+**Build failures**
+- *Linux* — install the platform deps listed under Prerequisites.
+- *macOS* — `xcode-select --install`.
+- *Windows* — install Visual Studio C++ Build Tools.
 
-**"webkit2gtk not found" (Linux)**
-- Install missing system dependencies (see prerequisites)
-
-**"xcrun: error" (macOS)**
-- Install Xcode Command Line Tools
-
-**"MSVC not found" (Windows)**
-- Install Visual Studio C++ Build Tools
-
-### Runtime Issues
-
-**Global shortcuts not working**
-- Check if permissions are granted (especially on macOS)
-- Verify shortcuts aren't conflicting with system shortcuts
-
-**Transparent window not working**
-- Check if compositor is running (Linux)
-- Verify window settings in `tauri.conf.json`
-
-**Click-through not working**
-- This feature may have limited support on Wayland
-- Try X11 session on Linux
+**Runtime issues**
+- *Global shortcuts* — on macOS, grant Accessibility permission in
+  System Settings. On Wayland, they may not work — use X11.
+- *Transparent window* — Linux needs a running compositor.
+- *Click-through* — limited on Wayland; X11 has full support.
 
 ## Resources
 

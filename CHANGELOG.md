@@ -23,7 +23,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Remote WebSocket control** — control play/pause/speed from a phone on the same network
 - **Custom font import** — load `.ttf` or `.otf` files from disk as the display font
 - **Script bookmarks** — `[CUE: label]` markers with `Ctrl+N`/`Ctrl+P` navigation
-- `ANALYSIS.md` — full code analysis and improvement roadmap document
+- `PROJECT_OVERVIEW.md` — technical deep-dive on architecture and engineering decisions
 
 ### Fixed
 - **CSP disabled** — `csp: null` replaced with a proper Content Security Policy

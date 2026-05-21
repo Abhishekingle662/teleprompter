@@ -1,390 +1,369 @@
 # Teleprompter
 
-A cross-platform desktop teleprompter built with Tauri (Rust) + React/Vite.
+A free, cross-platform desktop teleprompter that runs as a borderless,
+transparent, always-on-top overlay. Park it over your camera app, OBS,
+or any window beneath it and read scrolling text without obstructing
+what's underneath. Built with [Tauri 2](https://tauri.app/) and React,
+ships as a sub-15 MB binary on Windows, macOS, and Linux.
+
+![Platforms: Windows · macOS · Linux](https://img.shields.io/badge/platforms-windows%20%7C%20macos%20%7C%20linux-blue)
+![License: MIT](https://img.shields.io/badge/license-MIT-green)
+![Version: 0.2.0](https://img.shields.io/badge/version-0.2.0-brightgreen)
+
+---
+
+## What it looks like
+
+Drop a screenshot into `screenshots/overlay.png` and it'll show here:
+
+`![Overlay over OBS](screenshots/overlay.png)`
+
+Until then, the gist:
+
+```
+ ┌────────────────────────────────────────────────────────────┐
+ │                                                            │
+ │       Welcome to the show. Today we're going to talk       │
+ │   ▒▒▒▒  about a small thing that changes a lot.  ▒▒▒▒      │  ← focus band
+ │                                                            │
+ │       It's a tool, but more importantly it's a habit.      │
+ │                                                            │
+ │  ● Playing — 23%                            ⌥ Inspector ⏵  │
+ └────────────────────────────────────────────────────────────┘
+```
+
+The window is transparent, borderless, and stays on top — the dotted
+border above is just the diagram. Press `Ctrl+Space` to play/pause,
+`Ctrl+Up`/`Ctrl+Down` to nudge the WPM, or hit Inspector to tweak
+everything.
+
+---
 
 ## Features
 
-- **Borderless, Transparent, Always-on-Top Overlay**: Perfect for on-screen prompting without obstructing your view
-- **Click-Through Mode**: Toggle click-through with hold-to-interact (Ctrl/Cmd+click)
-- **Text Import**: Import `.txt` or `.md` files or paste text directly
-- **Continuous & Karaoke Scroll**: Smooth scrolling with customizable WPM (Words Per Minute) speed
-- **Customization**:
-  - Font family and size
-  - Adjustable margins (top, bottom, left, right)
-  - Text mirroring for teleprompter glass setups
-  - Opacity and blur controls
-  - Focus band highlighting
-- **Countdown Timer**: Configurable countdown before playback starts
-- **Global Hotkeys**:
-  - `Ctrl/Cmd+Space`: Play/Pause
-  - `Ctrl/Cmd+Up`: Increase speed
-  - `Ctrl/Cmd+Down`: Decrease speed
-  - `Ctrl/Cmd+Shift+O`: Decrease opacity
-  - `Ctrl/Cmd+Shift+P`: Increase opacity
-- **Profile Management**: Save and load different configurations
-- **Session Restore**: Automatically restores your last session on startup
-- **Cross-Platform**: Windows, macOS, and Linux (X11/Wayland)
+**Display**
+- Borderless, transparent, always-on-top window
+- Click-through mode with hold-`Ctrl` to interact
+- Mirror mode for teleprompter glass / beam-splitter setups
+- Adjustable opacity and Gaussian text blur
+- Focus band overlay (highlighted reading area, configurable position
+  and height)
+- Per-side margins (0–300 px independently)
+- Skip-taskbar toggle
 
-## Prerequisites
+**Playback**
+- Continuous scroll mode (WPM-accurate via Canvas `measureText`)
+- Karaoke mode with word-by-word highlighting and auto-centering
+- Configurable countdown timer (0–10 s) before playback starts
+- Scroll-position scrubber to seek to any point
+- Reading-time estimate based on word count and WPM
+- 60 fps `requestAnimationFrame` engine
 
-### Development Prerequisites
+**Scripts**
+- Import `.txt` / `.md` files, paste text, or type directly
+- Multi-file workspace with recent-files list (last 10)
+- Live file watching — edit a `.txt` in your editor and the prompter
+  refreshes
+- Cue markers: insert `[CUE: label]` anywhere; jump between cues with
+  `Ctrl+N` / `Ctrl+P`
+- Per-profile saved settings (font, WPM, margins, focus band, etc.)
+- Session auto-save (debounced, on every text or scroll change)
 
-- [Node.js](https://nodejs.org/) (v18 or later)
-- [Rust](https://www.rust-lang.org/) (latest stable)
-- [Tauri Prerequisites](https://tauri.app/start/prerequisites/) for your platform:
-  - **Linux**: `webkit2gtk`, `libappindicator3`, and other system dependencies
-  - **macOS**: Xcode Command Line Tools
-  - **Windows**: Microsoft Visual Studio C++ build tools
+**Hotkeys**
+- Global shortcuts that work without window focus
+- Every shortcut remappable from the Inspector
 
-## Installation & Setup
+**Integration**
+- System tray icon (Play/Pause, Show/Hide, Quit)
+- Multi-monitor support — pick which display to dock on
+- Custom font import (`.ttf` / `.otf` from disk)
+- WebSocket remote control on `127.0.0.1:9001` (phone or any client)
+- MCP server for AI-assisted script editing from Claude or ChatGPT
+
+**Platform**
+- Windows 10/11, macOS (Intel + Apple Silicon), Linux (X11 fully
+  supported; Wayland partial)
+
+---
+
+## Quick start
+
+The 30-second path:
+
+1. Download the build for your OS from
+   [Releases](https://github.com/Abhishekingle662/teleprompter/releases)
+   — or skip to **Build from source** below.
+2. Launch the app. It opens as a transparent overlay with the Inspector
+   on the right.
+3. Click **Import File** → pick a `.txt` or `.md`, or paste text into
+   the editor.
+4. Press `Ctrl+Space` (or click Play).
+5. To get a clean view: click **Hide Controls**. Press `Escape` to bring
+   them back.
+
+Recommended starting settings: WPM 150, font size 56 px, margins 60 px
+on each side, focus band at 50 %.
+
+---
+
+## Build from source
 
 ### Prerequisites
 
-Before you begin, make sure you have the following installed:
+- [Node.js](https://nodejs.org/) v20 or later
+- [Rust](https://rustup.rs/) (latest stable)
+- Platform-specific:
 
-1. **Node.js** (v18 or later)
-   - Download from [nodejs.org](https://nodejs.org/)
-   - Verify installation: `node --version`
+  **Linux (Debian/Ubuntu):**
+  ```bash
+  sudo apt update
+  sudo apt install -y libwebkit2gtk-4.1-dev build-essential curl \
+    wget file libxdo-dev libssl-dev libayatana-appindicator3-dev \
+    librsvg2-dev patchelf
+  ```
 
-2. **Rust** (latest stable)
-   - Install from [rustup.rs](https://rustup.rs/)
-   - On Windows: Run the installer and follow prompts
-   - Verify installation: `rustc --version`
+  **Linux (Fedora):**
+  ```bash
+  sudo dnf install webkit2gtk4.1-devel openssl-devel curl wget file \
+    libappindicator-gtk3-devel librsvg2-devel
+  ```
 
-3. **Platform-Specific Tools**:
-   
-   **Windows:**
-   - Microsoft Visual Studio C++ Build Tools
-   - Download from [Visual Studio Downloads](https://visualstudio.microsoft.com/downloads/)
-   - Select "Desktop development with C++" workload
-   
-   **macOS:**
-   - Xcode Command Line Tools: `xcode-select --install`
-   
-   **Linux:**
-   ```bash
-   # Debian/Ubuntu
-   sudo apt update
-   sudo apt install libwebkit2gtk-4.1-dev \
-     build-essential \
-     curl \
-     wget \
-     file \
-     libxdo-dev \
-     libssl-dev \
-     libayatana-appindicator3-dev \
-     librsvg2-dev
-   
-   # Fedora
-   sudo dnf install webkit2gtk4.1-devel \
-     openssl-devel \
-     curl \
-     wget \
-     file \
-     libappindicator-gtk3-devel \
-     librsvg2-devel
-   
-   # Arch
-   sudo pacman -S webkit2gtk-4.1 \
-     base-devel \
-     curl \
-     wget \
-     file \
-     openssl \
-     appmenu-gtk-module \
-     gtk3 \
-     libappindicator-gtk3 \
-     librsvg
-   ```
+  **macOS:**
+  ```bash
+  xcode-select --install
+  ```
 
-### Building from Source
+  **Windows:** Install
+  [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+  with the "Desktop development with C++" workload. WebView2 is preinstalled
+  on Windows 10/11.
 
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/Abhishekingle662/teleprompter.git
-   cd teleprompter
-   ```
+### Build
 
-2. **Install Node dependencies:**
-   ```bash
-   npm install
-   ```
+```bash
+git clone https://github.com/Abhishekingle662/teleprompter.git
+cd teleprompter
+npm install
+npm run tauri dev        # run with hot-reload
+npm run tauri build      # produce installable binaries
+```
 
-3. **Run in development mode** (for testing):
-   ```bash
-   npm run tauri dev
-   ```
-   This will compile the app and open it in a window. Changes to the code will auto-reload.
+Production output lands in `src-tauri/target/release/bundle/`:
 
-4. **Build the production app:**
-   ```bash
-   npm run tauri build
-   ```
-   
-   This creates optimized executables in `src-tauri/target/release/bundle/`:
-   
-   - **Windows**: `teleprompter.exe` in `nsis/` or `msi/` folder
-   - **macOS**: `teleprompter.app` in `dmg/` or `macos/` folder  
-   - **Linux**: `.deb`, `.AppImage`, or `.rpm` in respective folders
+- Windows: `.msi` (in `msi/`) or `.exe` (in `nsis/`)
+- macOS: `.dmg` (in `dmg/`) or raw `.app` (in `macos/`)
+- Linux: `.deb` (`deb/`), `.AppImage` (`appimage/`), `.rpm` (`rpm/`)
 
-5. **Install the built app:**
-   
-   **Windows:**
-   - Run the installer from `src-tauri/target/release/bundle/nsis/`
-   - Or extract and run the portable `.exe`
-   
-   **macOS:**
-   - Open the `.dmg` file and drag to Applications
-   - Or double-click the `.app` file
-   
-   **Linux:**
-   ```bash
-   # Debian/Ubuntu (.deb)
-   sudo dpkg -i src-tauri/target/release/bundle/deb/teleprompter_*.deb
-   
-   # Fedora/RHEL (.rpm)
-   sudo rpm -i src-tauri/target/release/bundle/rpm/teleprompter-*.rpm
-   
-   # AppImage (no installation needed)
-   chmod +x src-tauri/target/release/bundle/appimage/teleprompter_*.AppImage
-   ./src-tauri/target/release/bundle/appimage/teleprompter_*.AppImage
-   ```
+> Use `npm run tauri dev` — not `npm run dev`. The latter starts Vite
+> only; Tauri APIs aren't available in a plain browser context.
 
-## How to Use
+---
 
-### Getting Started
+## Usage
 
-1. **Launch the Application**
-   - Open the Teleprompter app from your applications menu or desktop
+### Loading a script
 
-2. **First-Time Setup**
-   - The app opens with a transparent, borderless window overlay
-   - You'll see a control panel on the right side of the screen
+Three ways:
 
-### Loading Your Text
+- **Import** — click "Import File" and pick a `.txt` or `.md`.
+- **Paste** — click the editor area and `Ctrl+V` / `Cmd+V`.
+- **Live file** — drop a file into the scripts directory (`Inspector →
+  Files → Open scripts folder`). Edits in your text editor refresh the
+  on-screen text automatically.
 
-**Option 1: Import a File**
-- Click the **"Import File"** button
-- Select a `.txt` or `.md` file from your computer
-- The text will appear in the scrollable area
+The bundled `sample.txt` is a quick way to verify things work.
 
-**Option 2: Paste Text Directly**
-- Click in the text area at the bottom of the controls
-- Type or paste your text (Ctrl+V / Cmd+V)
-- Your text is automatically saved
+### Cue markers
 
-### Configuring Settings
+Insert `[CUE: label]` anywhere in your script. The Inspector lists all
+cues; `Ctrl+N` jumps to the next, `Ctrl+P` to the previous.
 
-**Speed Control:**
-- Adjust **"Speed (WPM)"** slider to set reading speed
-- 120-180 WPM is typical for comfortable reading
-- Use keyboard shortcuts: Ctrl/Cmd+Up/Down to adjust while reading
+```
+Welcome to the show.
 
-**Visual Customization:**
-- **Font Size**: Make text larger or smaller
-- **Font Family**: Choose between Sans-serif, Serif, or Monospace
-- **Text Color**: Use the color picker or adjust with Ctrl/Cmd+[/]
-- **Margins**: Adjust Top, Bottom, Left, Right margins to position text
+[CUE: Intro] Today we're going to talk about three things.
 
-**Advanced Features:**
-- **Mirror Text**: Enable for teleprompter glass setups
-- **Blur Background**: Add blur effect behind text
-- **Focus Band**: Highlight a specific reading area
-- **Click-Through Mode**: Make window non-interactive (see below)
+[CUE: Body] First, let's start with the basics...
 
-### Starting Your Teleprompter
+[CUE: Outro] Thanks for watching.
+```
 
-1. **Set Countdown** (optional):
-   - Enter seconds in "Countdown" field
-   - Gives you time to get ready before text starts scrolling
+### Inspector tabs
 
-2. **Start Scrolling**:
-   - Click the **"Play"** button, or
-   - Press **Ctrl/Cmd+Space**
+The right-hand panel is grouped into tabs to keep things scannable:
 
-3. **Control Playback**:
-   - **Pause**: Click "Pause" or press Ctrl/Cmd+Space again
-   - **Stop**: Press **Escape** key
-   - **Speed up/down**: Ctrl/Cmd+Up/Down arrows
+- **Playback** — WPM, mode, countdown, scrubber, reading-time estimate
+- **Type** — font family, size, custom font import, color, mirror
+- **Layout** — margins, focus band, blur, opacity
+- **Window** — click-through, skip-taskbar, monitor picker
+- **Profiles** — save/load named setting bundles
+- **Hotkeys** — remap any shortcut
 
-### Using Click-Through Mode
+### Click-through mode
 
-Click-through mode makes the teleprompter transparent to mouse clicks:
+Enable click-through to make the window invisible to mouse clicks —
+useful when recording. Click "Enable Click-Through" or hit the bound
+hotkey. To interact again: hold `Ctrl`/`Cmd` while clicking, or press
+`Ctrl+I` to toggle it off entirely.
 
-1. **Enable Click-Through**:
-   - Check the "Click-Through" checkbox in controls
+### Profiles & session restore
 
-2. **When to Use**:
-   - You can now click "through" the teleprompter to interact with apps behind it
-   - Perfect for recording videos or presentations
+Save current settings as a named profile from the Profiles tab. Your
+last text and scroll position are auto-saved (debounced, 500 ms) — close
+the app and reopen, you're back where you left off.
 
-3. **Accessing Controls**:
-   - Press **Ctrl/Cmd+I** to toggle click-through OFF temporarily
-   - Adjust settings, then press **Ctrl/Cmd+I** again to re-enable
-   - Or press **Escape** to show/hide the control panel
+---
 
-### Saving Profiles
+## Keyboard shortcuts
 
-Create profiles for different use cases (e.g., "Video Recording", "Live Speech"):
-
-1. Configure your preferred settings
-2. Enter a name in "Profile Name" field
-3. Click **"Save Profile"**
-4. Load anytime from the dropdown menu
-
-### Session Restore
-
-- Your last text and scroll position are automatically saved
-- When you reopen the app, it resumes where you left off
-
-## Keyboard Shortcuts
-
-Global shortcuts work even when the app isn't focused:
+Global, so they work without window focus. Every binding is remappable
+in the Inspector → Hotkeys tab.
 
 | Shortcut | Action |
-|----------|--------|
-| `Ctrl/Cmd+Space` | Play/Pause |
-| `Ctrl/Cmd+Up` | Increase speed (+10 WPM) |
-| `Ctrl/Cmd+Down` | Decrease speed (-10 WPM) |
-| `Ctrl/Cmd+[` | Darken text color |
-| `Ctrl/Cmd+]` | Lighten text color |
-| `Ctrl/Cmd+I` | Toggle click-through (when enabled, use this to interact with controls) |
+|---|---|
+| `Ctrl/Cmd+Space` | Play / Pause |
+| `Ctrl/Cmd+Up` | Increase WPM (+10) |
+| `Ctrl/Cmd+Down` | Decrease WPM (−10) |
+| `Ctrl/Cmd+=` | Increase font size (+2 px) |
+| `Ctrl/Cmd+-` | Decrease font size (−2 px) |
+| `Ctrl/Cmd+N` | Jump to next cue |
+| `Ctrl/Cmd+P` | Jump to previous cue |
+| `Ctrl/Cmd+I` | Toggle click-through |
+| `Ctrl/Cmd+F` | Toggle file manager |
 | `Escape` | Stop playback or toggle controls |
 
-## Troubleshooting
+---
 
-### "Cannot read properties of undefined" Errors
+## AI integration (MCP)
 
-If you see console errors like `Cannot read properties of undefined (reading 'transformCallback')`:
-- Make sure you're running the app with `npm run tauri dev` (not `npm run dev`)
-- The app requires the Tauri runtime to function properly
+The `mcp-server/` directory ships a
+[Model Context Protocol](https://modelcontextprotocol.io/) server that
+exposes the workspace to MCP-compatible clients (Claude Desktop,
+ChatGPT, etc.). Once wired up, you can say "rewrite the third paragraph
+more concisely" and the on-screen prompt updates within a second.
 
-### App Won't Start / Build Fails
+Sample Claude Desktop config (`claude_desktop_config.json`):
 
-**Windows:**
-- Ensure Visual Studio C++ Build Tools are installed
-- Try running as Administrator if you get permission errors
-
-**macOS:**
-- Install Xcode Command Line Tools: `xcode-select --install`
-- Grant accessibility permissions in System Preferences for global shortcuts
-
-**Linux:**
-- Install all required system libraries (see Prerequisites)
-- On Wayland, some features may be limited - try X11 if possible
-
-### Global Shortcuts Not Working
-
-**macOS:**
-- Go to System Preferences → Security & Privacy → Accessibility
-- Grant permission to the Teleprompter app
-
-**Linux:**
-- Ensure you have the required permissions
-- On Wayland, global shortcuts may not work - use X11
-
-**Windows:**
-- Shortcuts should work by default
-- Check that no other app is using the same shortcuts
-
-### Click-Through Mode Issues
-
-- If you can't interact with controls: Press **Ctrl/Cmd+I** to toggle click-through off
-- Press **Escape** to show the control panel
-- Disable "Click-Through" checkbox if you want permanent mouse access
-
-### Text Color/Opacity Issues
-
-- If text appears too dark or invisible:
-  - Use the color picker to select a brighter color
-  - Press Ctrl/Cmd+] to lighten the text
-  - Check that background blur isn't obscuring the text
-
-### Performance Issues
-
-- Reduce blur intensity if scrolling is slow
-- Use a simpler font family
-- Decrease font size for better performance
-
-## Platform-Specific Notes
-
-### Linux
-
-- **X11**: Full support for all features
-- **Wayland**: Limited support; some window management features may not work as expected due to Wayland's security model
-
-### macOS
-
-- You may need to grant accessibility permissions for global hotkeys to work
-
-### Windows
-
-- The application should work out of the box on Windows 10/11
-
-## Development
-
-### Project Structure
-
-```
-teleprompter/
-├── src/                 # React frontend
-│   ├── App.tsx         # Main application component
-│   ├── App.css         # Styles
-│   └── main.tsx        # Entry point
-├── src-tauri/          # Rust backend
-│   ├── src/
-│   │   ├── lib.rs      # Tauri commands and state management
-│   │   └── main.rs     # Application entry point
-│   ├── capabilities/   # Tauri permissions
-│   └── tauri.conf.json # Tauri configuration
-└── package.json        # Node dependencies
+```json
+{
+  "mcpServers": {
+    "teleprompter": {
+      "command": "node",
+      "args": ["/abs/path/to/teleprompter/mcp-server/dist/index.js"],
+      "env": {
+        "MCP_WORKSPACE_ROOT": "/abs/path/to/teleprompter",
+        "MCP_SCRIPT_PATH": "scripts/current.txt"
+      }
+    }
+  }
+}
 ```
 
-### Available Scripts
+The teleprompter watches `scripts/current.txt` (configurable) — when
+the MCP client writes to it, the change shows up live. See
+[`mcp-server/README.md`](mcp-server/README.md) for the full tool list
+and deployment models (local companion process vs. remote service).
 
-- `npm run dev`: Start Vite development server (browser only - Tauri APIs won't work)
-- `npm run build`: Build frontend for production
-- `npm run tauri dev`: Run application in development mode (recomcargomended)
-- `npm run tauri build`: Build application for production
+---
+
+## Remote control (WebSocket)
+
+The app starts a local WebSocket server on `127.0.0.1:9001`. Send JSON
+frames to control playback from any device on the same network — handy
+for a phone-as-remote setup.
+
+Sample JS client:
+
+```js
+const ws = new WebSocket("ws://localhost:9001");
+ws.onopen = () => {
+  ws.send(JSON.stringify({ action: "play_pause" }));
+  ws.send(JSON.stringify({ action: "set_wpm", value: 180 }));
+};
+```
+
+Supported actions: `play_pause`, `reset`, `set_wpm` (with `value`),
+`adjust_wpm` (with `delta`), `next_cue`, `prev_cue`.
+
+---
+
+## Configuration files
+
+Settings, profiles, and scripts live in the OS-standard application
+data directory:
+
+| OS | Path |
+|---|---|
+| Windows | `%APPDATA%\teleprompter\` |
+| macOS | `~/Library/Application Support/teleprompter/` |
+| Linux | `~/.local/share/teleprompter/` |
+
+Contents: `settings.json`, `profiles.json`, `session.json`, and a
+`scripts/` subdirectory with the live `current.txt` and any saved
+scripts.
+
+---
+
+## Architecture
+
+Three processes at runtime: the Tauri shell (Rust, native window APIs +
+file watching + WebSocket), the React frontend in the WebView (renderer,
+scroll engine, settings UI), and the optional MCP server (Node.js,
+stdio). The connection between them is filesystem-driven — any MCP
+write triggers a `notify` event that refreshes the on-screen text.
+
+See [`PROJECT_OVERVIEW.md`](PROJECT_OVERVIEW.md) for a full technical
+walkthrough: component tree, custom hooks, Tauri command surface, and
+six engineering stories from the v0.2.0 refactor.
+
+---
 
 ## Troubleshooting
 
-### "Cannot read properties of undefined" Errors
+**"Cannot read properties of undefined (reading 'transformCallback')"**
+You're running the bare Vite dev server. Use `npm run tauri dev` — the
+Tauri plugins (file system, store, global shortcuts) only exist in the
+native app context.
 
-If you see errors like:
-```
-Cannot read properties of undefined (reading 'transformCallback')
-Cannot read properties of undefined (reading 'invoke')
-```
+**Global shortcuts don't work (macOS)**
+System Settings → Privacy & Security → Accessibility → add the
+Teleprompter app and toggle it on.
 
-**Solution**: You're running the app in a browser instead of the Tauri app. The Tauri APIs are only available when running the actual desktop application.
+**Global shortcuts don't work (Linux/Wayland)**
+Wayland's security model blocks cross-application global shortcuts.
+Switch to an X11 session, or use the WebSocket remote as a workaround.
 
-**Fix**: Use `npm run tauri dev` instead of `npm run dev`
+**Transparent window not transparent (Linux)**
+You need a running compositor. Most modern desktops have one
+(GNOME/KDE/Sway); if you're on a minimal WM, install `picom` or similar.
 
-The Tauri plugins (global shortcuts, file system, store, etc.) only work in the native application context, not in a browser.
+**Click-through stuck on**
+Press `Ctrl+I` to toggle it off. If that's been remapped, open the
+system tray icon → Show, then disable click-through from the Inspector.
 
-### Global Shortcuts Not Working on macOS
+**Build fails on Linux: `webkit2gtk not found`**
+Install the system dependencies listed under **Build from source →
+Prerequisites → Linux** above.
 
-On macOS, you may need to grant accessibility permissions:
-1. Go to System Preferences > Security & Privacy > Privacy > Accessibility
-2. Add your terminal application or the Teleprompter app to the list
-3. Restart the application
-
-### Wayland Support
-
-On Linux with Wayland, some features like window positioning and click-through may not work properly due to Wayland's security model. Consider using X11 for full functionality.
+---
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Pull requests welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for dev
+setup, the project layout, the manual smoke-test checklist, and the
+PR process.
+
+## Roadmap
+
+See [`ROADMAP.md`](ROADMAP.md) for what's planned. The
+[`CHANGELOG.md`](CHANGELOG.md) tracks what's already shipped.
 
 ## License
 
-This project is licensed under the MIT License.
+MIT. See [`LICENSE`](LICENSE).
 
 ## Acknowledgments
 
-Built with:
-- [Tauri](https://tauri.app/) - Framework for building desktop applications
-- [React](https://react.dev/) - UI library
-- [Vite](https://vite.dev/) - Build tool
+Built with [Tauri](https://tauri.app/), [React](https://react.dev/),
+[Vite](https://vite.dev/), and the
+[Model Context Protocol](https://modelcontextprotocol.io/) SDK.
