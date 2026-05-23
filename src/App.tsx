@@ -63,6 +63,7 @@ function App() {
   const hotkeysRef = useRef<HotkeyMap>(DEFAULT_HOTKEYS);
   const [wsInfo, setWsInfo] = useState<{ ip: string; port: number } | null>(null);
   const [importedFonts, setImportedFonts] = useState<Array<{ name: string; dataUrl: string }>>([]);
+  const [appDataDir, setAppDataDir] = useState<string | null>(null);
   // Stable ref so the remote-action listener (registered once) can call the
   // latest updateSettings without a stale closure.
   const updateSettingsRef = useRef<(s: import("./types").Settings) => void>(() => {});
@@ -173,6 +174,12 @@ function App() {
     )
       .then(setMonitors)
       .catch(console.error);
+  }, []);
+
+  // Fetch app data directory for MCP setup display (independent of store init).
+  useEffect(() => {
+    if (!IS_TAURI) return;
+    invoke<string>("get_app_data_dir").then(setAppDataDir).catch(console.error);
   }, []);
 
   const toggleSkipTaskbar = async () => {
@@ -1293,6 +1300,7 @@ function App() {
           onConfigureHotkeys={() => setShowHotkeySettings(true)}
           wsInfo={wsInfo}
           wordCount={wordCount}
+          appDataDir={appDataDir}
         />
         <div className="rail-collapsed">
           <button

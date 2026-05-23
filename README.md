@@ -14,12 +14,6 @@ ships as a sub-15 MB binary on Windows, macOS, and Linux.
 
 ## What it looks like
 
-Drop a screenshot into `screenshots/overlay.png` and it'll show here:
-
-`![Overlay over OBS](screenshots/overlay.png)`
-
-Until then, the gist:
-
 ```
  ┌────────────────────────────────────────────────────────────┐
  │                                                            │

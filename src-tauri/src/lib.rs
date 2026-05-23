@@ -639,6 +639,15 @@ fn list_imported_fonts(app: tauri::AppHandle) -> Result<Vec<serde_json::Value>, 
     Ok(result)
 }
 
+/// Return the app data directory as a string so the UI can display it for MCP setup.
+#[tauri::command]
+fn get_app_data_dir(app: tauri::AppHandle) -> Result<String, String> {
+    app.path()
+        .app_data_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .map_err(|e| e.to_string())
+}
+
 /// Toggle whether the window appears in the OS taskbar.
 #[tauri::command]
 fn set_skip_taskbar(app: tauri::AppHandle, skip: bool) -> Result<(), String> {
@@ -826,6 +835,7 @@ pub fn run() {
             get_ws_info,
             import_font,
             list_imported_fonts,
+            get_app_data_dir,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]

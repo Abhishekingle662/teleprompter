@@ -348,6 +348,15 @@ A typical Claude Desktop config entry:
 With this in place, "Claude, rewrite the intro to sound more casual"
 becomes a one-shot edit visible on-screen in under a second.
 
+### 7.1 Why TypeScript (a note on the rewrite)
+
+The MCP server was originally prototyped in Python, where the MCP SDK
+had the best early support. During the v0.2.0 refactor it was rewritten
+in TypeScript to align with the existing Node/Vite build toolchain and
+eliminate the two-runtime coordination overhead (Python process plus
+Node/Tauri). The protocol itself is language-agnostic — the rewrite was
+purely an operational simplification, not a capability change.
+
 ## 8. Performance & testing
 
 Honest current state:

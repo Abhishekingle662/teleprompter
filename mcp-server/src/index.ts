@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 const server = new McpServer({
   name: "teleprompter-mcp",
@@ -10,16 +11,16 @@ const server = new McpServer({
 });
 
 const workspaceRootEnv = process.env.MCP_WORKSPACE_ROOT;
-const workspaceRoot = workspaceRootEnv
+export const workspaceRoot = workspaceRootEnv
   ? path.resolve(workspaceRootEnv)
   : process.cwd();
 
-const defaultScriptTarget =
+export const defaultScriptTarget =
   process.env.MCP_SCRIPT_PATH && process.env.MCP_SCRIPT_PATH.trim().length > 0
     ? process.env.MCP_SCRIPT_PATH.trim()
     : "scripts/current.txt";
 
-function resolveWorkspacePath(requestedPath: string) {
+export function resolveWorkspacePath(requestedPath: string) {
   const absolute = path.resolve(workspaceRoot, requestedPath);
   const rel = path.relative(workspaceRoot, absolute);
   if (rel.startsWith("..") || path.isAbsolute(rel)) {
@@ -28,10 +29,41 @@ function resolveWorkspacePath(requestedPath: string) {
   return absolute;
 }
 
-function resolveScriptPath(customPath?: string) {
+export function resolveScriptPath(customPath?: string) {
   const target =
     customPath && customPath.trim().length > 0 ? customPath : defaultScriptTarget;
   return resolveWorkspacePath(target);
+}
+
+export async function writeFile(args: {
+  path: string;
+  contents: string;
+  encoding?: "utf8" | "base64";
+  overwrite?: boolean;
+}): Promise<{ bytes: number; absolutePath: string }> {
+  const encoding = args.encoding ?? "utf8";
+  const overwrite = args.overwrite ?? false;
+  const filePath = resolveWorkspacePath(args.path);
+
+  try {
+    const stat = await fs.stat(filePath);
+    if (stat && !overwrite) {
+      throw new Error("File already exists. Set overwrite to true to replace.");
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+  }
+
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+
+  const buffer =
+    encoding === "utf8"
+      ? Buffer.from(args.contents, "utf8")
+      : Buffer.from(args.contents, "base64");
+  await fs.writeFile(filePath, buffer);
+  return { bytes: buffer.length, absolutePath: filePath };
 }
 
 const listFilesSchema = z.object({
@@ -202,34 +234,13 @@ server.registerTool(
     inputSchema: writeFileSchema.shape,
   },
   async (rawArgs?: unknown) => {
-    const { path: requestedPath, contents, encoding, overwrite } =
-      writeFileSchema.parse(rawArgs ?? {});
-    const filePath = resolveWorkspacePath(requestedPath);
-
-    try {
-      const stat = await fs.stat(filePath);
-      if (stat && !overwrite) {
-        throw new Error("File already exists. Set overwrite to true to replace.");
-      }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        throw error;
-      }
-    }
-
-    await fs.mkdir(path.dirname(filePath), { recursive: true });
-
-    const buffer =
-      encoding === "utf8"
-        ? Buffer.from(contents, "utf8")
-        : Buffer.from(contents, "base64");
-    await fs.writeFile(filePath, buffer);
-
+    const parsed = writeFileSchema.parse(rawArgs ?? {});
+    const { bytes } = await writeFile(parsed);
     return {
       content: [
         {
           type: "text",
-          text: `Wrote ${buffer.length} bytes to ${requestedPath}`,
+          text: `Wrote ${bytes} bytes to ${parsed.path}`,
         },
       ],
     };
@@ -364,7 +375,13 @@ async function main() {
   });
 }
 
-main().catch((error) => {
-  console.error("Failed to start Teleprompter MCP server:", error);
-  process.exit(1);
-});
+const invokedAsScript =
+  typeof process.argv[1] === "string" &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (invokedAsScript) {
+  main().catch((error) => {
+    console.error("Failed to start Teleprompter MCP server:", error);
+    process.exit(1);
+  });
+}

@@ -26,3 +26,20 @@ dist-ssr
 # Tauri
 src-tauri/target
 src-tauri/Cargo.lock
+
+# Secrets / local env
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+*.crt
+*.cer
+*.der
+*.jks
+*.keystore
+**/secrets.*
+**/credentials.*
+.npmrc

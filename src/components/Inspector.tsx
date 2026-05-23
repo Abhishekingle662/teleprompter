@@ -33,6 +33,8 @@ interface InspectorProps {
   wsInfo: { ip: string; port: number } | null;
   // Word stats
   wordCount: number;
+  // App data dir for MCP setup
+  appDataDir: string | null;
 }
 
 export function Inspector(props: InspectorProps) {
@@ -286,10 +288,50 @@ function StageTab({ settings, onSettingsChange, cues, onJumpToCue }: InspectorPr
 function OutputTab({
   clickThrough, skipTaskbar, monitors,
   onToggleClickThrough, onToggleSkipTaskbar, onMoveToMonitor,
-  onSaveSession, onConfigureHotkeys, wsInfo,
+  onSaveSession, onConfigureHotkeys, wsInfo, appDataDir,
 }: InspectorProps) {
+  const [copied, setCopied] = useState(false);
+
+  const copyAppDataDir = () => {
+    if (!appDataDir) return;
+    navigator.clipboard.writeText(appDataDir).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
   return (
     <>
+      <div className="field-group">
+        <div className="field-group-title">MCP setup</div>
+        <div className="field-hint" style={{ marginBottom: 6 }}>
+          Set <code>MCP_WORKSPACE_ROOT</code> to this path in your MCP server config so scripts are shared with the app.
+        </div>
+        {appDataDir ? (
+          <>
+            <div
+              className="ws-info"
+              style={{ wordBreak: "break-all", cursor: "pointer", userSelect: "all" }}
+              title="Click to copy"
+              onClick={copyAppDataDir}
+            >
+              {appDataDir}
+            </div>
+            <button
+              className="btn btn-ghost btn-full"
+              onClick={copyAppDataDir}
+              style={{ marginTop: 6 }}
+            >
+              {copied ? "Copied!" : "Copy path"}
+            </button>
+          </>
+        ) : (
+          <div className="field-hint" style={{ color: "var(--color-warn, #f59e0b)" }}>
+            Loading path…
+          </div>
+        )}
+      </div>
+
       <div className="field-group">
         <div className="field-group-title">Window</div>
         <button

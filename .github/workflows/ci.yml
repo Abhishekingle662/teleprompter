@@ -1,40 +1,170 @@
 name: CI
 
+# High-quality pre-merge pipeline.
+#
+# Layout:
+#   changes        — detect which areas a PR touches, skip unaffected jobs
+#   frontend       — typecheck + production Vite build (catches missing imports
+#                    that `tsc --noEmit` alone would miss)
+#   mcp-server     — typecheck, build, vitest with coverage
+#   rust           — rustfmt --check, clippy (warnings-as-errors), cargo test
+#   tauri-build    — full Tauri bundle on ubuntu/macos/windows (smoke build,
+#                    no signing, no upload) — the real cross-platform gate
+#   security       — npm audit + cargo audit (advisory; soft-fails on moderate)
+#   ci-success     — single required check for branch protection
+
 on:
   push:
     branches: [main, master]
   pull_request:
     branches: [main, master]
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref (typical for PR pushes); keep main runs.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "20"
+  RUST_BACKTRACE: short
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"   # incremental builds waste cache space in CI
 
 jobs:
-  frontend:
-    name: Frontend (typecheck + lint)
+  # --------------------------------------------------------------------------
+  # Change detection — lets PRs that only touch docs skip the heavy jobs.
+  # --------------------------------------------------------------------------
+  changes:
+    name: Detect changed areas
     runs-on: ubuntu-latest
+    outputs:
+      frontend: ${{ steps.filter.outputs.frontend }}
+      mcp: ${{ steps.filter.outputs.mcp }}
+      rust: ${{ steps.filter.outputs.rust }}
+      tauri: ${{ steps.filter.outputs.tauri }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            frontend:
+              - 'src/**'
+              - 'public/**'
+              - 'index.html'
+              - 'package.json'
+              - 'package-lock.json'
+              - 'tsconfig*.json'
+              - 'vite.config.*'
+            mcp:
+              - 'mcp-server/**'
+            rust:
+              - 'src-tauri/**'
+            tauri:
+              - 'src/**'
+              - 'src-tauri/**'
+              - 'package.json'
+              - 'package-lock.json'
+
+  # --------------------------------------------------------------------------
+  # Frontend: TypeScript + production Vite build.
+  # --------------------------------------------------------------------------
+  frontend:
+    name: Frontend (typecheck + build)
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --no-audit --no-fund
 
       - name: Type check
         run: npx tsc --noEmit
 
-  rust:
-    name: Rust (check + clippy)
+      - name: Production build
+        run: npm run build
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: dist/
+          retention-days: 7
+          if-no-files-found: error
+
+  # --------------------------------------------------------------------------
+  # MCP server: typecheck, build, and run vitest with coverage.
+  # --------------------------------------------------------------------------
+  mcp-server:
+    name: MCP server (build + test)
+    needs: changes
+    if: needs.changes.outputs.mcp == 'true' || github.event_name == 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: mcp-server
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: mcp-server/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
+
+      - name: Test (vitest)
+        run: npm test -- --reporter=verbose --coverage
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcp-coverage
+          path: mcp-server/coverage/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # --------------------------------------------------------------------------
+  # Rust: format check, clippy with warnings-as-errors, unit tests.
+  # Runs on Linux only — full cross-platform compilation happens in tauri-build.
+  # --------------------------------------------------------------------------
+  rust:
+    name: Rust (fmt + clippy + test)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
             librsvg2-dev \
@@ -45,17 +175,146 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          # Share the cache across CI jobs in this workflow.
+          shared-key: ci-rust
 
-      - name: cargo check
+      - name: cargo fmt --check
         working-directory: src-tauri
-        run: cargo check --all-targets
+        run: cargo fmt --all -- --check
 
       - name: cargo clippy
         working-directory: src-tauri
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test --all-features --no-fail-fast
+
+  # --------------------------------------------------------------------------
+  # Tauri smoke build on all three release platforms. Verifies the actual
+  # bundle compiles and produces an installer — the highest-confidence pre-merge
+  # signal short of running the binary. No signing, no upload.
+  # --------------------------------------------------------------------------
+  tauri-build:
+    name: Tauri build (${{ matrix.platform.name }})
+    needs: [changes, frontend, rust]
+    if: needs.changes.outputs.tauri == 'true' || github.event_name == 'push'
+    runs-on: ${{ matrix.platform.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - { os: ubuntu-latest, name: linux }
+          - { os: macos-latest,  name: macos }
+          - { os: windows-latest, name: windows }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install Linux system dependencies
+        if: matrix.platform.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          shared-key: ci-tauri-${{ matrix.platform.name }}
+
+      - name: Install frontend dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Build Tauri bundle (no signing, no publish)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Explicitly empty — never sign on PR builds.
+          TAURI_SIGNING_PRIVATE_KEY: ""
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+
+  # --------------------------------------------------------------------------
+  # Security audits. Advisory: surface known CVEs without blocking unrelated work.
+  # Bump to hard failure once a baseline of green builds is established.
+  # --------------------------------------------------------------------------
+  security:
+    name: Security audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: npm audit (frontend, high+)
+        run: npm audit --omit=dev --audit-level=high
+        continue-on-error: true
+
+      - name: npm audit (mcp-server, high+)
+        working-directory: mcp-server
+        run: npm audit --omit=dev --audit-level=high
+        continue-on-error: true
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install --locked cargo-audit
+
+      - name: cargo audit
+        working-directory: src-tauri
+        run: cargo audit --deny warnings
+        continue-on-error: true
+
+  # --------------------------------------------------------------------------
+  # Single required check for branch protection. Fails if any upstream job
+  # failed; passes if upstream was skipped (e.g. docs-only PR).
+  # --------------------------------------------------------------------------
+  ci-success:
+    name: CI success
+    needs: [frontend, mcp-server, rust, tauri-build]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify all required jobs succeeded
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "Upstream job results:"
+          echo "$RESULTS" | python3 -m json.tool
+          echo "$RESULTS" | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          failed = [name for name, j in data.items() if j['result'] == 'failure' or j['result'] == 'cancelled']
+          if failed:
+              print(f'::error::Failed/cancelled jobs: {failed}')
+              sys.exit(1)
+          print('All required jobs passed or were skipped.')
+          "
