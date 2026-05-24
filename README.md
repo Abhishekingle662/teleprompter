@@ -25,6 +25,7 @@ ships as a sub-15 MB binary on Windows, macOS, and Linux.
  │  ● Playing — 23%                            ⌥ Inspector ⏵  │
  └────────────────────────────────────────────────────────────┘
 ```
+https://github.com/user-attachments/assets/950a2ddb-6cbe-4bc3-881d-df3ba78f19a5
 
 The window is transparent, borderless, and stays on top — the dotted
 border above is just the diagram. Press `Ctrl+Space` to play/pause,
