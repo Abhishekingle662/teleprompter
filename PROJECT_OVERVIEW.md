@@ -47,7 +47,10 @@ scripting surface for power users.
 
 v0.2.0 (April 2026) added karaoke mode, system tray, multi-monitor,
 WebSocket remote, MCP integration, configurable hotkeys, custom font
-import, cue markers, and a substantial architecture refactor — see
+import, cue markers, and a substantial architecture refactor. v0.3.0
+(May 2026) is a stabilization release — MCP test suite and Docker
+support, the `get_app_data_dir` setup panel, and a full CI pipeline —
+the last milestone before the in-app phone-remote feature. See
 `CHANGELOG.md` for the full list.
 
 ## 3. Architecture
@@ -62,7 +65,7 @@ boundaries:
    IPC (Tauri   │  ┌─────────────────────────┐  │   spawn / stdio
    commands &   │  │  WebSocket server       │  │  ┌────────────────────┐
    events)      │  │  (tokio-tungstenite,    │  │  │  MCP server        │
-   ◄────────────┼──┤   127.0.0.1:9001)       │  │  │  (Node.js, stdio)  │
+   ◄────────────┼──┤   0.0.0.0:OS-port)      │  │  │  (Node.js, stdio)  │
                 │  │                         │  │  │  registers 7 tools │
                 │  └─────────────────────────┘  │  └────────────────────┘
                 │                               │           ▲
@@ -118,10 +121,13 @@ App (src/App.tsx)
 └── Dialogs              confirm, input, notification, new-file
 ```
 
-> The three components marked "local only" are present on the author's
-> disk but not yet committed; they're imported by `App.tsx` and the
-> tree won't build without them. See `CHANGELOG.md` v0.2.0 entry —
-> these are part of the App.tsx decomposition.
+`TopBar`, `TransportBar`, and `Inspector` carve the old monolithic
+control panel into window chrome, the transport row, and the tabbed
+settings panel respectively. `Inspector` has four tabs — **Type**
+(font/size/color/opacity/blur/mirror), **Speed** (WPM, reading-time
+estimate, countdown, scroll mode), **Stage** (margins, focus band, cue
+jumps), and **Output** (MCP setup path, window controls, session save,
+hotkey config, WebSocket address).
 
 State shape — defined in `src/types/index.ts`:
 
@@ -195,18 +201,31 @@ events.
   returns the resolved path. Frontend then injects `@font-face`.
 - `list_imported_fonts` — enumerates the imported fonts directory.
 
+**Paths:**
+- `get_app_data_dir` — returns the resolved `app_data_dir()` as a string.
+  The Output tab displays it with a copy button so the user can paste it
+  into `MCP_WORKSPACE_ROOT` — the app data dir *is* the MCP workspace
+  root, which is how the live-script handshake stays consistent across
+  the two processes.
+
 **Monitors:**
 - `list_monitors` — enumerates displays with position, size, and
   scale factor.
 - `move_to_monitor` — repositions the main window onto a chosen monitor.
 
 **WebSocket remote:**
-- Spawned at app startup on `127.0.0.1:9001` using
-  `tokio_tungstenite::accept_async`. Accepts JSON frames like
-  `{"action": "play_pause"}` or `{"action": "set_wpm", "value": 180}`
-  and forwards them to the frontend as `remote-action` Tauri events.
-  The frontend handles them in the same code path as keyboard hotkeys,
-  so there's only one place where actions are interpreted.
+- `start_ws_server` binds `0.0.0.0:0` (the OS assigns a free port, so
+  there is no hard-coded port to collide with), spawns a
+  `tokio_tungstenite::accept_async` loop, and is idempotent — calling it
+  again returns the already-bound port. The frontend invokes it once on
+  mount, then calls `get_ws_info` to read back `{ ip, port }` and renders
+  the address in the Inspector's Output tab. Incoming JSON frames
+  (`{"action": "..."}`) are forwarded verbatim as `remote-action` Tauri
+  events; the frontend's `remote-action` listener interprets
+  `play`, `pause`, `toggle`, `faster` (+10 WPM, cap 600), `slower`
+  (−10 WPM, floor 30), and `reset` (scroll to top) — the same code path
+  as the keyboard hotkeys, so actions are interpreted in exactly one
+  place.
 
 **Tray:** `TrayIconBuilder` with Play/Pause, Show/Hide, Quit menu
 items, plus a left-click handler that toggles window visibility.
@@ -348,25 +367,37 @@ A typical Claude Desktop config entry:
 With this in place, "Claude, rewrite the intro to sound more casual"
 becomes a one-shot edit visible on-screen in under a second.
 
-### 7.1 Why TypeScript (a note on the rewrite)
+### 7.1 Why TypeScript (the Python → TypeScript migration)
 
-The MCP server was originally prototyped in Python, where the MCP SDK
-had the best early support. During the v0.2.0 refactor it was rewritten
-in TypeScript to align with the existing Node/Vite build toolchain and
-eliminate the two-runtime coordination overhead (Python process plus
-Node/Tauri). The protocol itself is language-agnostic — the rewrite was
-purely an operational simplification, not a capability change.
+The MCP server began in Python, where the MCP SDK had the best early
+support. During the v0.2.0 refactor it was migrated to TypeScript to
+align with the existing Node/Vite build toolchain and eliminate the
+two-runtime coordination overhead (a separate Python process alongside
+Node/Tauri). The protocol itself is language-agnostic — the migration
+was purely an operational simplification, not a capability change.
 
 ## 8. Performance & testing
 
 Honest current state:
 
-- **No automated test suite.** The CI workflow (`.github/workflows/ci.yml`)
-  runs `tsc --noEmit` and `cargo clippy -- -D warnings` — those catch
-  type errors and Rust lints, but no behavior tests. The release
-  workflow (`release.yml`) builds platform binaries on version tags.
+- **CI pipeline** (`.github/workflows/ci.yml`) gates merges with
+  change-detection plus per-area jobs: frontend (`tsc --noEmit` + a real
+  Vite production build, which catches missing imports a bare typecheck
+  misses), MCP server (typecheck + build + `vitest` with coverage), Rust
+  (`rustfmt --check` + `clippy -D warnings` + `cargo test`), and a
+  cross-platform `tauri-build` that compiles the full bundle on Linux,
+  macOS, and Windows. A `security` job runs advisory `npm audit` /
+  `cargo audit`, and a single `ci-success` check is the branch-protection
+  gate. A separate `release.yml` builds and publishes platform binaries
+  on version tags.
+- **Automated tests are partial.** The MCP server has a `vitest` suite
+  covering path-escape rejection, the `write_file` overwrite guard, and
+  the default-script-path fallback. The Tauri frontend and Rust core have
+  no behavior tests yet — `cargo test` runs but the crate currently
+  carries no unit tests.
 - **Manual smoke test** documented in `CONTRIBUTING.md`. Takes ~5
-  minutes per platform.
+  minutes per platform. `scripts/ws-smoke.mjs` automates the
+  WebSocket-remote leg of that check.
 - **Render performance** measured informally: 5 000-word script at
   300 WPM holds 60 fps on a 2020-era M1; CPU sits around 3–5 %
   during playback. The `setInterval(16)` scroll loop was replaced

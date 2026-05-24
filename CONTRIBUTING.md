@@ -68,25 +68,33 @@ Thank you for your interest in contributing to the Teleprompter project! This gu
 
 ```
 teleprompter/
-├── .github/
-│   └── workflows/       # CI/CD workflows
-├── src/                 # React frontend source
-│   ├── App.tsx         # Main application component
-│   ├── App.css         # Application styles
-│   ├── main.tsx        # React entry point
-│   └── assets/         # Static assets
-├── src-tauri/          # Rust backend source
+├── .github/workflows/      # CI (ci.yml) and release (release.yml)
+├── src/                     # React frontend
+│   ├── App.tsx             # Root component — wires everything together
+│   ├── App.css             # Application styles
+│   ├── main.tsx            # React entry point
+│   ├── components/         # TopBar, TransportBar, Inspector,
+│   │                       #   TextDisplay, FileManager,
+│   │                       #   HotkeySettings, Dialogs
+│   ├── hooks/              # useScrollEngine, useSettings
+│   └── types/index.ts      # Shared types + DEFAULT_SETTINGS / HOTKEYS
+├── src-tauri/              # Rust backend
 │   ├── src/
-│   │   ├── lib.rs      # Main library with Tauri commands
-│   │   └── main.rs     # Application entry point
-│   ├── capabilities/   # Tauri permissions configuration
-│   ├── icons/          # Application icons
-│   ├── Cargo.toml      # Rust dependencies
-│   └── tauri.conf.json # Tauri configuration
-├── public/             # Public static files
-├── package.json        # Node.js dependencies and scripts
-├── vite.config.ts      # Vite configuration
-└── tsconfig.json       # TypeScript configuration
+│   │   ├── lib.rs          # All Tauri commands + WebSocket + watchers
+│   │   └── main.rs         # Application entry point
+│   ├── capabilities/       # Tauri permissions
+│   ├── icons/              # App icons (desktop + Android/iOS assets)
+│   ├── Cargo.toml          # Rust dependencies
+│   └── tauri.conf.json     # Tauri configuration (window, CSP, bundle)
+├── mcp-server/             # Standalone MCP server (TypeScript, stdio)
+│   ├── src/index.ts        # Server + tools
+│   ├── src/index.test.ts   # vitest suite
+│   └── Dockerfile          # Containerized stdio server
+├── scripts/                # Sample scripts + ws-smoke.mjs remote check
+├── public/                 # Static files
+├── package.json            # Frontend deps and scripts
+├── vite.config.ts          # Vite configuration
+└── tsconfig.json           # TypeScript configuration
 ```
 
 ## Development Workflow
@@ -110,21 +118,39 @@ teleprompter/
 
 ### Testing
 
-#### Frontend Testing
-```bash
-# Build the frontend
-npm run build
+CI (`.github/workflows/ci.yml`) runs all of the following on every PR.
+Run the relevant ones locally before pushing.
 
-# The built files will be in the dist/ directory
+#### Frontend
+```bash
+npx tsc --noEmit     # type check
+npm run build        # production Vite build (catches missing imports)
 ```
 
-#### Full Application Testing
+#### MCP server
 ```bash
-# Build the complete application
-npm run tauri build
-
-# The built application will be in src-tauri/target/release/
+cd mcp-server
+npm install
+npx tsc --noEmit     # type check
+npm test             # vitest suite (path-escape, overwrite guard, …)
 ```
+
+#### Rust backend
+```bash
+cd src-tauri
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test
+```
+
+#### Full application
+```bash
+npm run tauri build  # builds the complete installable bundle
+```
+
+For the WebSocket remote specifically, `node scripts/ws-smoke.mjs
+ws://<ip>:<port>` (use the address shown in the Inspector's Output tab)
+fires each remote action against a running instance.
 
 ### Code Style
 
@@ -145,15 +171,18 @@ npm run tauri build
 ### Frontend Features
 
 1. **New UI Components**
-   - Add to `src/App.tsx` or create a new component file
+   - Add a component under `src/components/` (keep `App.tsx` as the
+     wiring layer, not a place for new markup)
    - Update `src/App.css` for styling
    - Use existing color scheme and design patterns
 
 2. **New Settings**
-   - Add to `Settings` interface in `src/App.tsx`
-   - Update default values
-   - Add UI controls in the control panel
-   - Save/load through the store
+   - Add the field to the `Settings` interface in `src/types/index.ts`
+     and update `DEFAULT_SETTINGS`
+   - Add UI controls in the relevant `Inspector` tab
+     (`src/components/Inspector.tsx`)
+   - Persistence is automatic via `useSettings` (debounced write to the
+     `settings.json` store)
 
 ### Backend Features
 

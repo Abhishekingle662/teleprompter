@@ -8,7 +8,7 @@ ships as a sub-15 MB binary on Windows, macOS, and Linux.
 
 ![Platforms: Windows · macOS · Linux](https://img.shields.io/badge/platforms-windows%20%7C%20macos%20%7C%20linux-blue)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
-![Version: 0.2.0](https://img.shields.io/badge/version-0.2.0-brightgreen)
+![Version: 0.3.0](https://img.shields.io/badge/version-0.3.0-brightgreen)
 
 ---
 
@@ -60,7 +60,7 @@ everything.
   refreshes
 - Cue markers: insert `[CUE: label]` anywhere; jump between cues with
   `Ctrl+N` / `Ctrl+P`
-- Per-profile saved settings (font, WPM, margins, focus band, etc.)
+- Persistent display settings (font, WPM, margins, focus band, etc.)
 - Session auto-save (debounced, on every text or scroll change)
 
 **Hotkeys**
@@ -71,8 +71,10 @@ everything.
 - System tray icon (Play/Pause, Show/Hide, Quit)
 - Multi-monitor support — pick which display to dock on
 - Custom font import (`.ttf` / `.otf` from disk)
-- WebSocket remote control on `127.0.0.1:9001` (phone or any client)
-- MCP server for AI-assisted script editing from Claude or ChatGPT
+- WebSocket remote control on the local network (phone or any client) —
+  the listen address is shown in the Inspector
+- MCP server for AI-assisted script editing from Claude or ChatGPT, with
+  a copy-the-path setup panel in the Inspector
 
 **Platform**
 - Windows 10/11, macOS (Intel + Apple Silicon), Linux (X11 fully
@@ -184,14 +186,20 @@ Welcome to the show.
 
 ### Inspector tabs
 
-The right-hand panel is grouped into tabs to keep things scannable:
+The right-hand panel is grouped into four tabs to keep things scannable:
 
-- **Playback** — WPM, mode, countdown, scrubber, reading-time estimate
-- **Type** — font family, size, custom font import, color, mirror
-- **Layout** — margins, focus band, blur, opacity
-- **Window** — click-through, skip-taskbar, monitor picker
-- **Profiles** — save/load named setting bundles
-- **Hotkeys** — remap any shortcut
+- **Type** — font family, custom font import, size, text color, opacity,
+  blur, mirror
+- **Speed** — WPM (with live reading-time estimate), countdown, scroll
+  mode (continuous / karaoke)
+- **Stage** — per-side margins, focus band (enable / position / height),
+  cue-marker jump list
+- **Output** — MCP setup path, window controls (click-through,
+  skip-taskbar, monitor picker), save session, configure hotkeys, and the
+  WebSocket remote address
+
+Hotkeys are remapped from a dedicated panel opened via "Configure
+hotkeys" in the Output tab.
 
 ### Click-through mode
 
@@ -200,11 +208,12 @@ useful when recording. Click "Enable Click-Through" or hit the bound
 hotkey. To interact again: hold `Ctrl`/`Cmd` while clicking, or press
 `Ctrl+I` to toggle it off entirely.
 
-### Profiles & session restore
+### Session restore
 
-Save current settings as a named profile from the Profiles tab. Your
+Your display settings persist automatically (debounced, 300 ms), and your
 last text and scroll position are auto-saved (debounced, 500 ms) — close
-the app and reopen, you're back where you left off.
+the app and reopen, you're back where you left off. Everything lives in a
+single `settings.json` store; there's no separate profile management.
 
 ---
 
@@ -262,28 +271,41 @@ and deployment models (local companion process vs. remote service).
 
 ## Remote control (WebSocket)
 
-The app starts a local WebSocket server on `127.0.0.1:9001`. Send JSON
-frames to control playback from any device on the same network — handy
+The app starts a WebSocket server bound to `0.0.0.0` on an
+OS-assigned port (so any device on the same network can reach it). The
+exact address — `ip:port` — is displayed in the Inspector's **Output**
+tab once the server is up. Send JSON frames to control playback — handy
 for a phone-as-remote setup.
 
-Sample JS client:
+Sample JS client (replace the port with the one shown in the Inspector):
 
 ```js
-const ws = new WebSocket("ws://localhost:9001");
+const ws = new WebSocket("ws://192.168.1.20:54321");
 ws.onopen = () => {
-  ws.send(JSON.stringify({ action: "play_pause" }));
-  ws.send(JSON.stringify({ action: "set_wpm", value: 180 }));
+  ws.send(JSON.stringify({ action: "toggle" }));
+  ws.send(JSON.stringify({ action: "faster" }));
 };
 ```
 
-Supported actions: `play_pause`, `reset`, `set_wpm` (with `value`),
-`adjust_wpm` (with `delta`), `next_cue`, `prev_cue`.
+Supported actions (each is `{ "action": "<name>" }`):
+
+| Action | Effect |
+|---|---|
+| `play` | Start playback (if stopped) |
+| `pause` | Pause playback (if playing) |
+| `toggle` | Toggle play / pause |
+| `faster` | Increase WPM by 10 (max 600) |
+| `slower` | Decrease WPM by 10 (min 30) |
+| `reset` | Scroll back to the top |
+
+The same `scripts/ws-smoke.mjs` helper in the repo runs through these
+actions against a running instance for a quick end-to-end check.
 
 ---
 
 ## Configuration files
 
-Settings, profiles, and scripts live in the OS-standard application
+Settings, scripts, and imported fonts live in the OS-standard application
 data directory:
 
 | OS | Path |
@@ -292,9 +314,12 @@ data directory:
 | macOS | `~/Library/Application Support/teleprompter/` |
 | Linux | `~/.local/share/teleprompter/` |
 
-Contents: `settings.json`, `profiles.json`, `session.json`, and a
-`scripts/` subdirectory with the live `current.txt` and any saved
-scripts.
+Contents: a single `settings.json` store (holds both display settings and
+the restored session), a `scripts/` subdirectory with the live
+`current.txt` and any saved scripts, and a `fonts/` subdirectory for
+imported `.ttf` / `.otf` files. This directory is also what you point
+`MCP_WORKSPACE_ROOT` at — the Inspector's Output tab shows and copies the
+exact path.
 
 ---
 

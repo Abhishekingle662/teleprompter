@@ -6,6 +6,26 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [0.3.0] — 2026-05-24
+
+The last stabilization release before the in-app phone-remote feature.
+Hardens the MCP integration and tooling; no breaking changes for users.
+
+### Added
+- **MCP server test suite** — `vitest` tests for path-escape rejection, the `write_file` overwrite guard, and the default-script-path fallback (`mcp-server/src/index.test.ts`)
+- **MCP server Docker support** — `Dockerfile` + `.dockerignore` for running the stdio server in a container with the workspace mounted
+- **MCP setup panel** — the Inspector's **Output** tab shows the app data directory with a one-click "Copy path" button, so you can paste it into `MCP_WORKSPACE_ROOT`
+- **`get_app_data_dir` Tauri command** — exposes the resolved app data directory to the frontend
+- **WebSocket smoke-test script** — `scripts/ws-smoke.mjs` opens a raw WebSocket handshake and fires remote actions to verify the remote-control server end-to-end
+- Cross-platform icon assets (Android, iOS, macOS `AppIcon.appiconset`) added under `src-tauri/icons/`
+
+### Changed
+- **CI pipeline overhaul** (`.github/workflows/ci.yml`) — change-detection gating plus separate jobs: frontend (typecheck + Vite build), MCP server (typecheck + build + vitest with coverage), Rust (`rustfmt --check` + `clippy -D warnings` + `cargo test`), cross-platform `tauri-build` smoke builds on Linux/macOS/Windows, advisory `npm audit`/`cargo audit`, and a single `ci-success` required check
+- **MCP server refactor** — core helpers (`workspaceRoot`, `resolveWorkspacePath`, `resolveScriptPath`, `writeFile`) are now exported and `main()` only runs when invoked as a script, making the module importable for tests
+- Content Security Policy widened to allow `blob:` images and `data:` fonts (`img-src 'self' data: blob:; font-src 'self' data:`)
+
+---
+
 ## [0.2.0] — 2026-04-14
 
 ### Added
@@ -44,9 +64,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 - `App.tsx` decomposed from 1,755 lines into focused components:
-  - `src/components/ControlPanel.tsx`
+  - `src/components/TopBar.tsx`, `src/components/TransportBar.tsx`,
+    `src/components/Inspector.tsx` (the window chrome, transport, and
+    tabbed settings panel)
   - `src/components/TextDisplay.tsx`
   - `src/components/FileManager.tsx`
+  - `src/components/HotkeySettings.tsx`
   - `src/components/Dialogs.tsx`
 - Shared types extracted to `src/types/index.ts`
 - Scroll engine extracted to `src/hooks/useScrollEngine.ts`
