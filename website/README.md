@@ -39,12 +39,20 @@ see releases" note instead of broken links — nothing 404s.
 > If/when the repo (or a dedicated releases repo) is public, you can switch back
 > to live API fetching — see the note in `src/hooks/useLatestRelease.ts`.
 
-## Deploy
+## Deploy (Vercel)
 
-Pushing changes under `website/**` to `main` triggers
-`.github/workflows/pages.yml`, which builds this app and deploys it to Pages.
+Deployed on Vercel, which builds from the (private) GitHub repo and serves the
+result publicly — no paid plan needed, unlike GitHub Pages for private repos.
 
-**One-time setup:** repo **Settings → Pages → Source = "GitHub Actions"**.
+**One-time setup in the Vercel dashboard** (Add New → Project → import the repo):
+
+- **Root Directory:** `website` ← important, the app lives in a subfolder
+- Framework preset: **Vite** (auto-detected)
+- Build command: `npm run build` · Output directory: `dist` (auto-detected)
+
+Vercel then auto-deploys every push (production for `main`, preview URLs for
+branches/PRs). After the first deploy, update the `og:url`/`og:image` domain in
+`index.html` to the real Vercel (or custom) domain.
 
 ## Adding the demo video
 
@@ -55,5 +63,5 @@ until then an annotated ASCII mock stands in. A social-preview image at
 
 ## Base path
 
-`vite.config.ts` sets `base: "/teleprompter/"` to match the project-pages URL.
-If you move to a custom domain (add a `CNAME`), change `base` to `"/"`.
+`vite.config.ts` sets `base: "/"` because Vercel serves at the domain root.
+(GitHub Pages project sites need `/teleprompter/` instead — not used here.)
