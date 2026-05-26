@@ -5,6 +5,12 @@ on:
     tags:
       - "v*"
 
+# tauri-action creates the GitHub Release and uploads assets, which needs write
+# access to repository contents. Without this the build compiles but fails at
+# "create-a-release" with "Resource not accessible by integration".
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build (${{ matrix.os }})
@@ -34,9 +40,8 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
             librsvg2-dev \
             patchelf \
             libgtk-3-dev \
