@@ -1,54 +1,41 @@
 import type { AssetsByOS, ReleaseAsset } from "../lib/os";
 
 /**
- * Static release manifest — the website's source of truth for the version and
- * downloads. Baked in at build time ON PURPOSE: the code repo is PRIVATE, so the
- * GitHub Releases API and release-asset URLs require authentication and return
- * 404 to anonymous visitors. A static manifest keeps the version, tag, and
- * project info reachable to everyone without exposing the repo.
+ * Static release manifest — baked in at build time so anonymous visitors get
+ * working links without hitting the GitHub API on every page load.
  *
- * To enable working download buttons, host the installers at a PUBLICLY
- * reachable location and either set DOWNLOAD_BASE (if all files share one base
- * URL) or paste full per-file URLs. Good public hosts:
- *   - a separate PUBLIC GitHub repo's Release (the code stays private)
- *   - object storage (Cloudflare R2, S3, Backblaze B2, …)
- * While no URLs are set, the Download section shows the version plus a
- * "build from source" note instead of broken links — nothing 404s.
+ * Releases: https://github.com/Abhishekingle662/teleprompter/releases
  */
 
-/** Displayed everywhere as the current version/tag. Always reachable (static). */
+/** Displayed everywhere as the current version/tag. */
 export const VERSION = "v0.3.0";
 
-/**
- * Public base URL for installer downloads, must end with "/". Leave "" until the
- * binaries are hosted publicly. Example:
- *   "https://github.com/<you>/teleprompter-releases/releases/download/v0.3.0/"
- */
-export const DOWNLOAD_BASE = "";
+/** Public releases index (changelog / "All releases" links). */
+export const RELEASE_NOTES_URL = "https://github.com/Abhishekingle662/teleprompter/releases";
 
-/** Public release-notes / changelog link. A private-repo URL 404s for visitors. */
-export const RELEASE_NOTES_URL = "";
+/** Base URL for installer downloads from the latest published tag. */
+export const DOWNLOAD_BASE =
+  "https://github.com/Abhishekingle662/teleprompter/releases/download/v0.3.0/";
 
-/**
- * Filenames as produced by the Tauri release build (verify against your actual
- * published assets — arch suffixes vary). `url` overrides DOWNLOAD_BASE + name
- * when set, so you can point individual files anywhere.
- */
 interface ManifestFile {
   name: string;
-  size?: number; // bytes; omit/0 to hide the size label
-  url?: string; // full public URL; falls back to DOWNLOAD_BASE + name
+  size?: number;
+  url?: string;
 }
 
 const FILES: Record<keyof AssetsByOS, ManifestFile[]> = {
-  windows: [{ name: "Teleprompter_0.3.0_x64_en-US.msi" }],
+  windows: [
+    { name: "Teleprompter_0.3.0_x64_en-US.msi", size: 4018176 },
+    { name: "Teleprompter_0.3.0_x64-setup.exe", size: 2600140 },
+  ],
   macos: [
-    { name: "Teleprompter_0.3.0_aarch64.dmg" },
-    { name: "Teleprompter_0.3.0_x64.dmg" },
+    { name: "Teleprompter_0.3.0_aarch64.dmg", size: 4068321 },
+    { name: "Teleprompter_aarch64.app.tar.gz", size: 3979165 },
   ],
   linux: [
-    { name: "Teleprompter_0.3.0_amd64.AppImage" },
-    { name: "Teleprompter_0.3.0_amd64.deb" },
+    { name: "Teleprompter_0.3.0_amd64.AppImage", size: 79714808 },
+    { name: "Teleprompter_0.3.0_amd64.deb", size: 5296714 },
+    { name: "Teleprompter-0.3.0-1.x86_64.rpm", size: 5297739 },
   ],
 };
 
