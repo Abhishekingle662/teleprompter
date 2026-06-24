@@ -1,10 +1,4 @@
-import {
-  OS_LABELS,
-  assetKindLabel,
-  formatBytes,
-  type OS,
-  type ReleaseAsset,
-} from "../lib/os";
+import { OS_LABELS, type OS } from "../lib/os";
 import { RELEASES_URL, type LatestRelease } from "../hooks/useLatestRelease";
 
 interface Props {
@@ -23,13 +17,9 @@ const PLATFORM_FORMATS: Record<Exclude<OS, "unknown">, string> = {
 function OsCard({
   os,
   detected,
-  assets,
-  loading,
 }: {
   os: Exclude<OS, "unknown">;
   detected: boolean;
-  assets: ReleaseAsset[];
-  loading: boolean;
 }) {
   return (
     <article className={`dl-card${detected ? " dl-card--detected" : ""}`}>
@@ -42,23 +32,8 @@ function OsCard({
       </p>
       <p className="dl-formats">{PLATFORM_FORMATS[os]}</p>
 
-      {loading ? (
-        <p className="dl-muted">Loading downloads…</p>
-      ) : (
-        <ul className="dl-assets">
-          {assets.map((a) => (
-            <li key={a.name}>
-              <a className="dl-link" href={a.browser_download_url}>
-                <span>{assetKindLabel(a.name)}</span>
-                {a.size ? <span className="dl-size">{formatBytes(a.size)}</span> : null}
-              </a>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      <a className="dl-github-link" href={RELEASES_URL} target="_blank" rel="noreferrer">
-        View on GitHub Releases →
+      <a className="dl-link dl-link--solo" href={RELEASES_URL} target="_blank" rel="noreferrer">
+        Download on GitHub Releases
       </a>
     </article>
   );
@@ -76,10 +51,16 @@ export function DownloadSection({ os, release }: Props) {
               <>Checking GitHub Releases…</>
             ) : (
               <>
-                <strong>{release.version}</strong> builds for Windows, macOS, and Linux are on{" "}
+                Pick your installer on{" "}
                 <a href={RELEASES_URL} target="_blank" rel="noreferrer">
                   GitHub Releases
                 </a>
+                {release.version ? (
+                  <>
+                    {" "}
+                    (<strong>{release.version}</strong>)
+                  </>
+                ) : null}
                 . Free &amp; open source (MIT).
               </>
             )}
@@ -88,13 +69,7 @@ export function DownloadSection({ os, release }: Props) {
 
         <div className="dl-grid">
           {DOWNLOAD_OSES.map((o) => (
-            <OsCard
-              key={o}
-              os={o}
-              detected={o === os}
-              assets={release.assetsByOS[o]}
-              loading={release.loading}
-            />
+            <OsCard key={o} os={o} detected={o === os} />
           ))}
         </div>
 

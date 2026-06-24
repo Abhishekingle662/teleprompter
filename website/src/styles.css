@@ -721,6 +721,12 @@ a:hover {
   text-decoration: none;
 }
 
+.dl-link--solo {
+  display: flex;
+  justify-content: center;
+  margin-top: 4px;
+}
+
 .dl-size {
   color: var(--muted);
   font-size: 0.82rem;
@@ -742,17 +748,6 @@ a:hover {
   color: #0a0a0a;
 }
 
-.dl-github-link {
-  display: inline-block;
-  margin-top: 14px;
-  font-size: 0.85rem;
-  color: var(--muted);
-  text-decoration: none;
-}
-.dl-github-link:hover {
-  color: var(--accent);
-  text-decoration: none;
-}
 
 /* ── Footer ─────────────────────────────────────────────────── */
 .footer {
