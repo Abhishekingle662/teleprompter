@@ -8,7 +8,6 @@ import { Store } from "@tauri-apps/plugin-store";
 import { register, unregisterAll } from "@tauri-apps/plugin-global-shortcut";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import "./App.css";
-
 import { TextDisplay } from "./components/TextDisplay";
 import { FileManager } from "./components/FileManager";
 import { TopBar, type UIMode, type UITheme, type UIBackground } from "./components/TopBar";
@@ -37,7 +36,6 @@ const SCRIPT_FILE_PATH = "scripts/current.txt";
 function App() {
   const [text, setText] = useState("");
   const [isPlaying, setIsPlaying] = useState(false);
-
   const [clickThrough, setClickThrough] = useState(false);
   const [countdown, setCountdown] = useState(0);
   const [isCountingDown, setIsCountingDown] = useState(false);
@@ -53,7 +51,6 @@ function App() {
   const [theme, setTheme] = useState<UITheme>("dark");
   const [background, setBackground] = useState<UIBackground>("opaque");
   const [mode, setMode] = useState<UIMode>("edit");
-
   const [skipTaskbar, setSkipTaskbar] = useState(false);
   const [monitors, setMonitors] = useState<Array<{ index: number; name: string; x: number; y: number; width: number; height: number }>>([]);
   const [recentFiles, setRecentFiles] = useState<Array<{ name: string; path: string }>>([]);
@@ -67,7 +64,10 @@ function App() {
   // Stable ref so the remote-action listener (registered once) can call the
   // latest updateSettings without a stale closure.
   const updateSettingsRef = useRef<(s: import("./types").Settings) => void>(() => {});
-  
+  // Same reason: the remote-action listener must call the latest
+  // togglePlayPause, otherwise it reads play state frozen at mount time and
+  // pause/toggle silently no-op while playing.
+  const togglePlayPauseRef = useRef<() => void>(() => {});
   const textContainerRef = useRef<HTMLDivElement>(null);
   const store = useRef<Store | null>(null);
   const isPlayingRef = useRef<boolean>(isPlaying);
@@ -308,13 +308,13 @@ function App() {
       const { action } = event.payload;
       switch (action) {
         case "play":
-          if (!isPlayingRef.current && !isCountingDownRef.current) togglePlayPause();
+          if (!isPlayingRef.current && !isCountingDownRef.current) togglePlayPauseRef.current();
           break;
         case "pause":
-          if (isPlayingRef.current) togglePlayPause();
+          if (isPlayingRef.current) togglePlayPauseRef.current();
           break;
         case "toggle":
-          togglePlayPause();
+          togglePlayPauseRef.current();
           break;
         case "faster":
           updateSettingsRef.current({ ...settingsRef.current, wpm: Math.min(600, settingsRef.current.wpm + 10) });
@@ -948,6 +948,9 @@ function App() {
       setIsCountingDown(false);
     }
   };
+  // Keep the ref pointing at the latest closure so the remote-action listener
+  // (registered once on mount) never calls a stale copy.
+  togglePlayPauseRef.current = togglePlayPause;
 
   const handleImportFile = async () => {
     if (!IS_TAURI) {
