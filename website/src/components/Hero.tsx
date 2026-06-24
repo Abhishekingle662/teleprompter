@@ -1,15 +1,13 @@
 import { OS_LABELS, formatBytes, type OS } from "../lib/os";
-import { REPO_URL, type LatestRelease } from "../hooks/useLatestRelease";
+import { type LatestRelease } from "../hooks/useLatestRelease";
+import { SiteNav } from "./SiteNav";
+import { PrompterMock } from "./PrompterMock";
 
 interface Props {
   os: OS;
   release: LatestRelease;
 }
 
-/**
- * Picks the single best asset to feature for the detected OS (first match wins —
- * .msi over .exe, .dmg over .tar.gz, .AppImage over .deb/.rpm).
- */
 function primaryAsset(os: OS, release: LatestRelease) {
   if (os === "unknown" || !release.assetsByOS) return null;
   return release.assetsByOS[os][0] ?? null;
@@ -19,54 +17,60 @@ export function Hero({ os, release }: Props) {
   const asset = primaryAsset(os, release);
 
   return (
-    <header className="hero">
-      <nav className="nav container">
-        <span className="brand">▶ Teleprompter</span>
-        <div className="nav-links">
-          <a href="#features">Features</a>
-          <a href="#how">How it works</a>
-          <a href="#download">Download</a>
-          <a href={REPO_URL} target="_blank" rel="noreferrer">
-            GitHub
-          </a>
+    <section className="hero">
+      <SiteNav />
+
+      <div className="container hero-grid">
+        <div className="hero-content">
+          <span className="pill">
+            Free · Open source
+            {release.version ? ` · ${release.version}` : ""}
+          </span>
+
+          <h1>
+            Read your script.{" "}
+            <span className="accent">Look at the lens.</span>
+          </h1>
+
+          <p className="lede">
+            A borderless, transparent overlay that floats above your camera app or OBS.
+            Clicks pass through to whatever is underneath — so you can scroll, pause,
+            and nudge speed without breaking your recording flow.
+          </p>
+
+          <div className="hero-cta">
+            {asset ? (
+              <a className="btn btn-primary" href={asset.browser_download_url}>
+                Download for {OS_LABELS[os]}
+                <span className="btn-sub">
+                  {release.version}
+                  {asset.size ? ` · ${formatBytes(asset.size)}` : ""}
+                </span>
+              </a>
+            ) : (
+              <a className="btn btn-primary" href="#download">
+                Get the app
+                <span className="btn-sub">Windows · macOS · Linux</span>
+              </a>
+            )}
+            <a className="btn btn-ghost" href="#features">
+              See features
+            </a>
+          </div>
+
+          <ul className="hero-tags">
+            <li>Tauri + Rust</li>
+            <li>Global hotkeys</li>
+            <li>Phone remote</li>
+            <li>AI script editing</li>
+          </ul>
         </div>
-      </nav>
 
-      <div className="hero-body container">
-        <span className="pill">
-          Free · Open source · ~12 MB{release.version ? ` · ${release.version}` : ""}
-        </span>
-        <h1>
-          A teleprompter that floats <span className="accent">on top of everything.</span>
-        </h1>
-        <p className="lede">
-          A borderless, transparent, always-on-top overlay. Park it over your camera app or OBS and
-          read a scrolling script while looking down the lens — your clicks pass straight through to
-          the app underneath. Built with Tauri, so it starts in under a second.
-        </p>
-
-        <div className="hero-cta">
-          {asset ? (
-            <a className="btn btn-primary" href={asset.browser_download_url}>
-              Download for {OS_LABELS[os]}
-              <span className="btn-sub">
-                {release.version}
-                {asset.size ? ` · ${formatBytes(asset.size)}` : ""}
-              </span>
-            </a>
-          ) : (
-            <a className="btn btn-primary" href={release.htmlUrl} target="_blank" rel="noreferrer">
-              {release.loading ? "Loading downloads…" : "Get the latest release"}
-              <span className="btn-sub">
-                {os === "unknown" ? "Choose your platform" : `for ${OS_LABELS[os]}`}
-              </span>
-            </a>
-          )}
-          <a className="btn btn-ghost" href="#download">
-            All platforms
-          </a>
+        <div className="hero-visual">
+          <PrompterMock />
+          <p className="hero-visual-caption">Transparent overlay over your camera feed</p>
         </div>
       </div>
-    </header>
+    </section>
   );
 }

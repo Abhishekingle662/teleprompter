@@ -714,6 +714,13 @@ async fn start_ws_server(
         *p = port;
     }
 
+    // Tokio requires the std listener to be in non-blocking mode before
+    // adopting it; otherwise `accept().await` blocks the worker thread and
+    // incoming connections are accepted by the kernel but never handled.
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| e.to_string())?;
+
     // Convert to a Tokio listener and spawn the accept loop.
     let tokio_listener =
         tokio::net::TcpListener::from_std(listener).map_err(|e| e.to_string())?;
