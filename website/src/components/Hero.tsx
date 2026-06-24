@@ -1,4 +1,4 @@
-import { OS_LABELS, formatBytes, type OS } from "../lib/os";
+import { OS_LABELS, type OS } from "../lib/os";
 import { RELEASES_URL, type LatestRelease } from "../hooks/useLatestRelease";
 import { SiteNav } from "./SiteNav";
 import { PrompterMock } from "./PrompterMock";
@@ -8,13 +8,8 @@ interface Props {
   release: LatestRelease;
 }
 
-function primaryAsset(os: OS, release: LatestRelease) {
-  if (os === "unknown") return null;
-  return release.assetsByOS[os][0] ?? null;
-}
-
 export function Hero({ os, release }: Props) {
-  const asset = primaryAsset(os, release);
+  const osLabel = os === "unknown" ? "GitHub" : OS_LABELS[os];
 
   return (
     <section className="hero">
@@ -39,22 +34,14 @@ export function Hero({ os, release }: Props) {
           </p>
 
           <div className="hero-cta">
-            {asset ? (
-              <a className="btn btn-primary" href={asset.browser_download_url}>
-                Download for {OS_LABELS[os]}
-                <span className="btn-sub">
-                  {release.version}
-                  {asset.size ? ` · ${formatBytes(asset.size)}` : ""}
-                </span>
-              </a>
-            ) : (
-              <a className="btn btn-primary" href={RELEASES_URL} target="_blank" rel="noreferrer">
-                Download on GitHub
-                <span className="btn-sub">Windows · macOS · Linux</span>
-              </a>
-            )}
+            <a className="btn btn-primary" href={RELEASES_URL} target="_blank" rel="noreferrer">
+              Download for {osLabel}
+              <span className="btn-sub">
+                {release.version ?? "Latest"} · GitHub Releases
+              </span>
+            </a>
             <a className="btn btn-ghost" href="#download">
-              All downloads
+              All platforms
             </a>
           </div>
 
