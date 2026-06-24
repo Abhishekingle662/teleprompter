@@ -14,6 +14,12 @@ interface Props {
 
 const DOWNLOAD_OSES: Exclude<OS, "unknown">[] = ["windows", "macos", "linux"];
 
+const PLATFORM_FORMATS: Record<Exclude<OS, "unknown">, string> = {
+  windows: ".msi · .exe",
+  macos: ".dmg · .app.tar.gz",
+  linux: "AppImage · .deb · .rpm",
+};
+
 function OsCard({
   os,
   detected,
@@ -22,7 +28,7 @@ function OsCard({
 }: {
   os: Exclude<OS, "unknown">;
   detected: boolean;
-  assets: ReleaseAsset[] | null;
+  assets: ReleaseAsset[];
   loading: boolean;
 }) {
   return (
@@ -30,9 +36,15 @@ function OsCard({
       {detected && <span className="dl-badge">Your platform</span>}
       <h3>{OS_LABELS[os]}</h3>
 
+      <p className="dl-status">
+        <span className="dl-status-dot" aria-hidden="true" />
+        Available on GitHub Releases
+      </p>
+      <p className="dl-formats">{PLATFORM_FORMATS[os]}</p>
+
       {loading ? (
-        <p className="dl-muted">Loading…</p>
-      ) : assets && assets.length > 0 ? (
+        <p className="dl-muted">Loading downloads…</p>
+      ) : (
         <ul className="dl-assets">
           {assets.map((a) => (
             <li key={a.name}>
@@ -43,14 +55,11 @@ function OsCard({
             </li>
           ))}
         </ul>
-      ) : (
-        <p className="dl-muted">
-          Coming soon.{" "}
-          <a href={RELEASES_URL} target="_blank" rel="noreferrer">
-            See releases
-          </a>
-        </p>
       )}
+
+      <a className="dl-github-link" href={RELEASES_URL} target="_blank" rel="noreferrer">
+        View on GitHub Releases →
+      </a>
     </article>
   );
 }
@@ -63,20 +72,16 @@ export function DownloadSection({ os, release }: Props) {
           <span className="section-eyebrow">Download</span>
           <h2 className="section-title">Get Teleprompter</h2>
           <p className="section-sub">
-            {release.version ? (
-              <>
-                Latest release <strong>{release.version}</strong> · free &amp; open source (MIT)
-              </>
-            ) : release.error ? (
-              <>
-                Couldn&apos;t reach GitHub — grab the latest build from the{" "}
-                <a href={RELEASES_URL} target="_blank" rel="noreferrer">
-                  releases page
-                </a>
-                .
-              </>
+            {release.loading ? (
+              <>Checking GitHub Releases…</>
             ) : (
-              <>Fetching the latest release…</>
+              <>
+                <strong>{release.version}</strong> builds for Windows, macOS, and Linux are on{" "}
+                <a href={RELEASES_URL} target="_blank" rel="noreferrer">
+                  GitHub Releases
+                </a>
+                . Free &amp; open source (MIT).
+              </>
             )}
           </p>
         </div>
@@ -87,15 +92,16 @@ export function DownloadSection({ os, release }: Props) {
               key={o}
               os={o}
               detected={o === os}
-              assets={release.assetsByOS ? release.assetsByOS[o] : null}
+              assets={release.assetsByOS[o]}
               loading={release.loading}
             />
           ))}
         </div>
 
         <p className="dl-foot">
-          <a href={RELEASES_URL} target="_blank" rel="noreferrer">
-            All releases &amp; changelog →
+          <a className="btn btn-primary" href={RELEASES_URL} target="_blank" rel="noreferrer">
+            Open GitHub Releases
+            <span className="btn-sub">{release.version ?? "Latest"} · all platforms</span>
           </a>
         </p>
       </div>

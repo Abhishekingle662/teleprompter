@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ASSETS_BY_OS, RELEASE_NOTES_URL, VERSION } from "../data/release";
-import { groupAssetsByOS, type AssetsByOS, type ReleaseAsset } from "../lib/os";
+import { groupAssetsByOS, type AssetsByOS } from "../lib/os";
 
 export const OWNER = "Abhishekingle662";
 export const REPO = "teleprompter";
@@ -12,9 +12,8 @@ const API_LATEST = `https://api.github.com/repos/${OWNER}/${REPO}/releases/lates
 export interface LatestRelease {
   version: string | null;
   htmlUrl: string;
-  assetsByOS: AssetsByOS | null;
+  assetsByOS: AssetsByOS;
   loading: boolean;
-  error: boolean;
 }
 
 interface GhAsset {
@@ -29,19 +28,24 @@ interface GhRelease {
   assets: GhAsset[];
 }
 
+function mergeAssets(api: AssetsByOS | null): AssetsByOS {
+  return {
+    windows: api?.windows.length ? api.windows : ASSETS_BY_OS.windows,
+    macos: api?.macos.length ? api.macos : ASSETS_BY_OS.macos,
+    linux: api?.linux.length ? api.linux : ASSETS_BY_OS.linux,
+  };
+}
+
 /**
- * Fetches the latest published GitHub release at runtime so download buttons
- * always reflect what's on https://github.com/Abhishekingle662/teleprompter/releases
- * without baking asset URLs into the build. Falls back to static values if the
- * API is unreachable.
+ * Loads release info from the GitHub API when available, always falling back to
+ * the static manifest so every platform shows working download links.
  */
 export function useLatestRelease(): LatestRelease {
   const [state, setState] = useState<LatestRelease>({
     version: VERSION,
     htmlUrl: RELEASES_URL,
-    assetsByOS: null,
+    assetsByOS: ASSETS_BY_OS,
     loading: true,
-    error: false,
   });
 
   useEffect(() => {
@@ -55,24 +59,23 @@ export function useLatestRelease(): LatestRelease {
         const data = (await res.json()) as GhRelease;
         if (data.draft) throw new Error("latest release is a draft");
 
-        const assets: ReleaseAsset[] = data.assets.map((a) => ({
-          name: a.name,
-          browser_download_url: a.browser_download_url,
-          size: a.size,
-        }));
-
-        const assetsByOS =
-          assets.length > 0
-            ? groupAssetsByOS(assets)
-            : { windows: [], macos: [], linux: [] };
+        const apiAssets =
+          data.assets.length > 0
+            ? groupAssetsByOS(
+                data.assets.map((a) => ({
+                  name: a.name,
+                  browser_download_url: a.browser_download_url,
+                  size: a.size,
+                })),
+              )
+            : null;
 
         if (!cancelled) {
           setState({
             version: data.tag_name,
             htmlUrl: RELEASES_URL,
-            assetsByOS,
+            assetsByOS: mergeAssets(apiAssets),
             loading: false,
-            error: false,
           });
         }
       } catch {
@@ -82,7 +85,6 @@ export function useLatestRelease(): LatestRelease {
             htmlUrl: RELEASES_URL,
             assetsByOS: ASSETS_BY_OS,
             loading: false,
-            error: true,
           });
         }
       }
